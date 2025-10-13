@@ -2,6 +2,21 @@
 
 This repository implements machine learning (ML) models in the context of spatial single-cell data analysis. It streamlines the entire process, from data preparation and model training to evaluation and interpretability.
 
+## Citation
+This pipeline was used in the following preprint:
+
+**"Identifying tissue states by spatial protein patterns related to chemotherapy response in triple-negative breast cancer"**
+bioRxiv (2025). DOI: [10.1101/2025.10.06.680783](https://www.biorxiv.org/content/10.1101/2025.10.06.680783)
+
+If you use this pipeline in your work, please consider citing the preprint. 
+
+## Preceding analysis
+### Data Preprocessing and Segmentation
+Data preprocessing and segmentation are performed using the separate [IMC_preprocessing](https://github.com/Schumacher-group/IMC_preprocessing) pipeline.
+### Cell phenotyping and spatial analysis
+This repository handles phenotyping and other analysis shown in the above manuscript: https://github.com/Schumacher-group/IMC_TNBC_analysis
+
+The output of the preprocessing pipeline (processed images and cell tables) serves as input for the phenotyping and analysis, and the output of the phenotyping (annotated cell table) serves as the input for the GNN prediction in this repository.
 
 ## Getting Started
 
