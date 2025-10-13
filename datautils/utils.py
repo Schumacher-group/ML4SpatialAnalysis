@@ -122,7 +122,7 @@ def process_roi(roi, cell_table, min_cells):
 	cell_labels = roi_cells.cell_meta_cluster.values
 	label = set(roi_cells.Response.values)
 	if len(label) != 1:
-		assert 0, f"Acquisition {roi} has non-unique labels"
+		raise ValueError(f"Acquisition {roi} has non-unique labels")
 	label = label.pop()
 	patient = roi_cells.Patient.iloc[0]
 	stain = int(roi_cells.Stain.iloc[0]) - 1 #Offset by 1 for labels

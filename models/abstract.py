@@ -173,7 +173,7 @@ class AbstractModel(ABC):
 			plt.savefig(buffer, format='png')
 			self.logger.log({f"Importance scores {self.config['name']} classifer": wandb.Image(Image.open(buffer))})
 		else:
-			assert 0,f"Attribution not implemented for {self.config['name']}"
+			raise NotImplementedError(f"Attribution not implemented for {self.config['name']}")
 
 
 	def save_model(self, logname):

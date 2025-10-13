@@ -7,7 +7,6 @@ from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
 import torch.nn.functional as F
 import numpy as np
-import pdb
 import wandb
 import torch.nn.functional as F
 import pandas as pd
@@ -174,7 +173,7 @@ class GraphConvolutionalNetwork:
 			elif self.fnorm == 'raw':
 				pass
 			else:
-				assert 0, f"{self.fnorm} not implemented"
+				raise NotImplementedError(f"{self.fnorm} not implemented")
 			coords = data_dict['coords'][i]
 			graph = coords_to_graph(coords, gmethod=self.gmethod, radius=self.radius)
 			graph = graph.tocoo()

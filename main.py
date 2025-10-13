@@ -42,7 +42,7 @@ def run(config):
 				f"_seed_{config['seed']}_balanced_train_{config['balanced_train']}"
 	os.environ['WANDB_DIR'] = config['model']['LOG_PATH']
 	# Initialize W&B logger with project name, entity, configuration, and log name
-	logger = wandb.init(entity="maximentropy", project="ML on TNBC Data", config=config, name=logname)
+	logger = wandb.init(entity=None, project="ML on TNBC Data", config=config, name=logname)
 	print('Preparing Features')
 	dataset = SpatialCellToFeatures(config['dataset'], random_state=config['seed'])
 	if config['dataset']['datasplit'] == 'leaveOneOut':

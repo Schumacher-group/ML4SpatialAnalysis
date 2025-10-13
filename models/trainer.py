@@ -139,6 +139,6 @@ class ModelTrainer(AbstractModel):
 			self.log_metrics(metrics_test, mode='LeaveOneOutPatientLevelTest')
 			print('Metrics at Patient Level', metrics_test)
 		else:
-			assert 0, f"{self.config['eval']} Evaluation not implemented"
+			raise NotImplementedError(f"{self.config['eval']} Evaluation not implemented")
 
 

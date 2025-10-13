@@ -307,7 +307,7 @@ def coords_to_graph(coords, gmethod='knn', mode='connectivity', radius=7):
 			coords, 
 			mode=mode)
 	else:
-		assert 0, f"{gmethod} Not Implemented"
+		raise NotImplementedError(f"{gmethod} Not Implemented")
 	if mode == 'distance':
 		G.data = distance_to_similarity(G)
 	return G
@@ -370,7 +370,7 @@ def graph_feature_vector(graph, gcriterion='heat_trace', feature_dim=10):
 		feature_vector = np.array([num_nodes, num_edges, density, clustering_coefficient, average_degree, connectivity])
 		feature_names = ['_num_nodes', '_num_edges', '_density', '_clustcoeff', '_avgdegree', '_connectivity']
 	else:
-		assert 0, f" {gcriterion} Not implemented. Valid options are `degree`, or `heat_trace`."
+		raise NotImplementedError(f" {gcriterion} Not implemented. Valid options are `degree`, or `heat_trace`.")
 
 	return feature_vector, feature_names
 
@@ -493,7 +493,7 @@ def patient_level_scores(y, y_pred, y_proba, patients, mode='Test', pcriterion='
 			unique_pred_patients_prob.append(prob_patient)
 
 		else:
-			assert 0,f"{pcriterion} Not Implemented"
+			raise NotImplementedError(f"{pcriterion} Not Implemented")
 
 	unique_pred_patients_prob = np.array(unique_pred_patients_prob)
 	unique_patients_label = np.array(unique_patients_label)

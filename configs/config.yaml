@@ -8,7 +8,7 @@ model:
   # Data splitting parameters
   eval: ??? # Evaluation method ('split' for train/test split, 'LeaveOneOut' for LeaveOneOut evaluation)
   pcriterion: 'weighted_mean'
-  LOG_PATH: '/n/data1/hms/cellbio/sander/asif/ML4SA_Results'  # Path to save model logs
+  LOG_PATH: './logmodels'  # Path to save model logs
   tok_k_attr: 10
   # Graph construction parameters
   # Feature selection criteria
@@ -87,7 +87,7 @@ model:
 
 # Dataset parameters
 dataset:
-  DATA_PATH: '/n/data1/hms/cellbio/sander/asif/KCLData/data'  # Path to the data directory
+  DATA_PATH: './data'  # Path to the data directory
   #cell_filename: 'cell_table_contrast_adj/updated_cell_table'  # Filename containing cell table data cell_table_size_normalized_cell_labels
   cell_filename: 'updated_cell_table'  # Filename containing cell table data cell_table_size_normalized_cell_labels
   response_filename: 'processed_response_RCB'  # Filename containing response labels

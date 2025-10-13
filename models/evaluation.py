@@ -88,7 +88,7 @@ class ModelEvaluation(AbstractModel):
 			print('Metrics at Patient Level', metrics_test)
 
 		else:
-			assert 0, f"{self.config['eval']} Evaluation not implemented"e
+			raise NotImplementedError(f"{self.config['eval']} Evaluation not implemented")
 
 	def wandb_log_figure(self, fig, name):
 		"""
@@ -127,7 +127,7 @@ class ModelEvaluation(AbstractModel):
 			reducer = umap.UMAP()
 			projections = reducer.fit_transform(all_rois)
 		else:
-			assert 0,'Not Implemented'
+			raise NotImplementedError('Not Implemented')
 		
 		unique_labels = np.unique(all_labels)
 		colors = plt.cm.get_cmap('tab10', len(unique_labels))

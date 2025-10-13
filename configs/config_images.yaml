@@ -7,7 +7,7 @@ trainer:
   nm_epochs: 100
   test_every: 5
   save_every: 5
-  LOG_PATH: '/Users/asifkhan/workspace/SpatialCellAnalysis/ML4SpatialAnalysis/logs'  # Path to save model logs
+  LOG_PATH: './logs'  # Path to save model logs
   ResNetClassifier:
     pretrained: True
     nm_markers: ???
@@ -21,7 +21,7 @@ trainer:
 
 # Dataset parameters
 dataset:
-  DATA_PATH: '/Users/asifkhan/workspace/SpatialCellAnalysis/ML4SpatialAnalysis/data'  # Path to the data directory
+  DATA_PATH: './data'  # Path to the data directory
   test_ratio: 0.3
   batch_size: 64
   response_filename: 'processed_response_enR'  # Filename containing response labels
