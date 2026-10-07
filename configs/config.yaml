@@ -1,4 +1,4 @@
-seed: 43 # Random seed for reproducibility
+seed: 46 # Random seed for reproducibility
 balanced_train: False
 model:
   name: 'gnn' # Name of the model (choices: gnn, logistic, randomforest, xgboost)
@@ -7,14 +7,14 @@ model:
   normalise_features: True
   # Data splitting parameters
   eval: ??? # Evaluation method ('split' for train/test split, 'LeaveOneOut' for LeaveOneOut evaluation)
-  pcriterion: 'weighted_mean'
+  pcriterion: 'majority'
   LOG_PATH: './logmodels'  # Path to save model logs
   tok_k_attr: 10
   # Graph construction parameters
   # Feature selection criteria
   fnorm: 'log1p_minmax'  # Normalisation criterion for cell features ('minmax', 'log1p', 'raw', 'arctan', 'znorm' - averages marker intensities in a ROI)
   gcriterion: null   # Feature selection criterion for graph features (choices: null, laplacian_spectrum, heat_trace, graphproperties or gcn)
-  nm_epochs: 20    # Number of training epochs
+  nm_epochs: 5    # Number of training epochs
   test_every: 1
   save_every: 5
   logistic:
@@ -34,14 +34,15 @@ model:
     logger: ???
     batch_size: 64   # Batch size for training
     fnorm: ???  # Normalisation criterion for cell features ('avgcellexpression' - averages marker intensities in a ROI)
+    node_f: 'expressions_celltypes' # 'expressions' or 'celltypes' or 'expressions_celltypes'
     class_weight: null
-    batch_correct: False
-    nm_batch: 5
-    k: 7              # Number of nearest neighbors (used for 'cellcell' graphs with 'knn' or 'atmostk' method)
-    gmethod: 'delaunay'     # Method for constructing the graph adjacency matrix ('knn' 'atmostk', 'delaunay' or 'radius')
+    k: 7              # Number of nearest neighbors, used by gmethod 'knn' and 'atmostk'; ignored by 'delaunay' and 'radius'.
+                      # Clamped to (cells in ROI) - 1; the smallest ROI in the cohort has 26 cells.
+    radius: 7.0       # Contact radius in pixels, used only by gmethod 'radius'
+    gmethod: 'atmostk'     # Method for constructing the graph adjacency matrix ('knn' 'atmostk', 'delaunay' or 'radius')
     gmode: 'connectivity'
     gcn:
-      hidden_dim: 512  # Dimensionality of hidden layer (needs to be specified)
+      hidden_dim: 256  # Dimensionality of hidden layer (needs to be specified)
       input_dim: ???  # Input feature dimensionality (needs to be specified)
     edgegcn:
       hidden_dim: 64
@@ -55,7 +56,7 @@ model:
       hidden_dim: 64  # Dimensionality of hidden layer (needs to be specified)
       input_dim: ???  # Input feature dimensionality (needs to be specified)
     ssgcn:
-      hidden_dim: ???  # Dimensionality of hidden layer (needs to be specified)
+      hidden_dim: 256
       input_dim: ???  # Input feature dimensionality (needs to be specified)
       K: 4
       alpha: 0.4
@@ -90,7 +91,7 @@ dataset:
   DATA_PATH: './data'  # Path to the data directory
   #cell_filename: 'cell_table_contrast_adj/updated_cell_table'  # Filename containing cell table data cell_table_size_normalized_cell_labels
   cell_filename: 'updated_cell_table'  # Filename containing cell table data cell_table_size_normalized_cell_labels
-  response_filename: 'processed_response_RCB'  # Filename containing response labels
+  response_filename: 'CleanCohort_Metadata'  # Filename containing response labels
   datasplit: 'split' # Evaluation method ('split' for train/test split, 'kfold' for KFold evaluation)
   test_ratio: 0.3  # Proportion of data used for testing
   folds: 5           # Number of folds for cross-validation

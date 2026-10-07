@@ -2,3 +2,6 @@ __pycache__/
 data/
 wandb/
 .DS_Store
+patient-benchmark-*.out
+patient-cache-*.out
+artifacts/

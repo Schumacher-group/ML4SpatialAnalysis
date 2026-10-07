@@ -34,9 +34,28 @@ To run the code with specified hyperparameters in a config file:
 python main.py configs/config.yaml
 ```
 
+```bash
+# Build the versioned QC cache and run all patient-level comparisons.
+python run_patient_benchmark.py \
+  --config configs/patient_benchmark.yaml \
+  --build-cache
+
+bash scripts/submit_regression.sh
+```
+
+Compare `expressions`, `celltypes`, and `combined` inputs for:
+
+- Regularized logistic regression on patient-level ROI summaries.
+- Random forest and XGBoost on exactly the same patient-level summaries and
+  outer folds, matching the classical models used in the workshop analysis.
+- A spatial logistic baseline with abundance-normalized cell-type contacts.
+- Hierarchical DeepSets (same encoders and pooling as the GNN, no edges).
+- A two-layer residual GINE using physical contact distances.
+- An edge-shuffled negative control for the combined GNN.
+
 ## Attribution Analysis
 
-Perform attribution analysis of a pretrained model:
+Attribution analysis of a pretrained model:
 
 ```bash
 python run_attribution.py configs/config.yaml

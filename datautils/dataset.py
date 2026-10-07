@@ -5,6 +5,7 @@ import pickle
 from mainutils.utils import train_test_split, k_fold_split
 
 class SpatialCellToFeatures:
+	CACHE_VERSION = 'v2_qc_trainfit'
 	"""
 	This class loads and prepares spatial gene expression data for further analysis.
 
@@ -34,7 +35,8 @@ class SpatialCellToFeatures:
 		# New file
 		#filename = f"{self.config['DATA_PATH']}/RCB_cellcell_processed_new_qcpass7_{self.config['datasplit']}_{self.seed}.pkl"
 
-		filename = f"{self.config['DATA_PATH']}/{self.config['cell_filename']}_{self.config['response_filename']}_{self.config['datasplit']}_{self.seed}.pkl"
+		split_detail = f"_test{self.config.get('test_ratio', 'na')}" if self.config['datasplit'] == 'split' else ''
+		filename = f"{self.config['DATA_PATH']}/{self.config['cell_filename']}_{self.config['response_filename']}_{self.CACHE_VERSION}_{self.config['datasplit']}{split_detail}_{self.seed}.pkl"
 
 		if os.path.exists(f"{filename}"):		
 			self.data = self.load_split_data(filename)
@@ -89,7 +91,7 @@ class SpatialCellToFeatures:
 		# New Data
 		#datafile = f"{self.config['DATA_PATH']}/RCB_processed_data_cellcell_new_qcpass7.pkl"
 
-		datafile = f"{self.config['DATA_PATH']}/{self.config['cell_filename']}_{self.config['response_filename']}.pkl"
+		datafile = f"{self.config['DATA_PATH']}/{self.config['cell_filename']}_{self.config['response_filename']}_{self.CACHE_VERSION}.pkl"
 		if os.path.exists(datafile):
 			data = self.load_data(datafile)
 		else:
@@ -102,7 +104,6 @@ class SpatialCellToFeatures:
 			print('Preparing Expression Data From Cell Table and saving to disk')
 			data = cellcell_to_features(cell_table, 
 											filename=datafile)
-
 		print('Split Expression Data and save to disk')
 		data['labels'] = np.asarray([self.unique_labels[label] for label in data['labels']])
 		if self.config['datasplit'] == 'split':
@@ -120,4 +121,7 @@ class SpatialCellToFeatures:
 			return dataset
 
 		if self.config['datasplit'] == 'leaveOneOut':
-			return data	
+			return data
+		raise ValueError(
+			f"Unsupported data split {self.config['datasplit']!r}; "
+		)

@@ -14,12 +14,15 @@ from collections import Counter
 from sklearn.metrics import (
 	accuracy_score, 
 	balanced_accuracy_score, 
+	f1_score,
 	roc_auc_score, 
 	roc_curve
 	)
 from scipy.spatial.distance import pdist, cdist
 from scipy.spatial import Delaunay
 from scipy.spatial import KDTree
+from scipy.spatial import QhullError
+import warnings
 import pandas as pd
 import wandb
 
@@ -137,9 +140,22 @@ def delaunay_graph(coords, mode='connectivity', dtype=np.float32):
 	if coords.ndim != 2:
 		raise ValueError("coords must be a 2D array")
 
-	# Compute triangulation
-	triangulation = Delaunay(coords)
 	n_points = len(coords)
+
+	# Delaunay is undefined for fewer than three points; connect what is there.
+	if n_points < 3:
+		A = sp.lil_matrix((n_points, n_points), dtype=dtype)
+		if n_points == 2:
+			val = 1.0 if mode == 'connectivity' else float(np.linalg.norm(coords[0] - coords[1]))
+			A[0, 1] = A[1, 0] = val
+		return A.tocsr()
+
+	# Compute triangulation. Degenerate ROIs (collinear or coincident centroids)
+	# make Qhull fail on the initial simplex; joggling the input breaks the tie.
+	try:
+		triangulation = Delaunay(coords)
+	except QhullError:
+		triangulation = Delaunay(coords, qhull_options='QJ')
 
 	# Pre-allocate arrays for COO matrix construction
 	# Each triangle (in 2D) has 3 edges, and we add each edge twice (i->j, j->i) => 6 entries
@@ -179,16 +195,44 @@ def delaunay_graph(coords, mode='connectivity', dtype=np.float32):
 	# Create a COO matrix (potentially with duplicate edges)
 	A_coo = sp.coo_matrix((data, (rows, cols)), shape=(n_points, n_points), dtype=dtype)
 
-	# Convert to CSR format (this sums duplicates at each (i, j))
+	# Average duplicate triangle contributions without halving boundary edges.
 	A = A_coo.tocsr()
-
-	# Ensure a clean symmetric matrix and handle duplicates via .maximum(A.T)/2:
-	#   - If an edge (i, j) appears multiple times, they get summed in .tocsr().
-	#   - For a typical 2D Delaunay, each interior edge is shared by exactly 2 triangles => 
-	#       that sums to 2*val. Taking .maximum(A.T) => 2*val, dividing by 2 => val again.
-	#   - On boundary edges (shared by only 1 triangle), we still added i->j and j->i => sum=2*val => /2 => val.
-	A = A.maximum(A.T) / 2
+	counts = sp.coo_matrix(
+		(np.ones_like(data), (rows, cols)), shape=(n_points, n_points)
+	).tocsr()
+	A.data = A.data / counts.data
+	A = A.maximum(A.T)
 	return A
+
+def clamp_k(k, n_samples, context=''):
+	"""
+	Caps the neighbourhood size at what an ROI supports.
+
+	A node can have at most n_samples - 1 distinct neighbours, and both
+	kneighbors_graph and the KDTree query raise once k exceeds that. 
+
+	Args:
+		k (int): Requested number of neighbours.
+		n_samples (int): Number of cells in the ROI.
+		context (str, optional): Label used in the warning message.
+
+	Returns:
+		int: The usable number of neighbours, at least 1.
+	"""
+	k = int(k)
+	if k < 1:
+		raise ValueError(f"k must be a positive integer, got {k}")
+	k_max = n_samples - 1
+	if k > k_max:
+		warnings.warn(
+			f"{context or 'graph'}: k={k} exceeds the {k_max} neighbours available "
+			f"in an ROI of {n_samples} cells; using k={k_max}",
+			RuntimeWarning,
+			stacklevel=2,
+		)
+		return k_max
+	return k
+
 
 def atmostk_neighbors_graph(
 	coords,
@@ -208,11 +252,13 @@ def atmostk_neighbors_graph(
 		raise ValueError("coords must be a 2D array")
 
 	n_samples = coords.shape[0]
-	if k >= n_samples:
-		raise ValueError("k must be less than number of samples")
+	if n_samples < 2:
+		return csr_matrix((n_samples, n_samples), dtype=np.float64)
 
-	# 1) Get more neighbors than needed initially (k*2) for threshold filtering
-	n_neighbors = min(n_samples - 1, k * 2)
+	k = clamp_k(k, n_samples, context='atmostk')
+
+	# Query exactly k candidates.
+	n_neighbors = min(n_samples - 1, k)
 	tree = KDTree(coords)
 	distances, indices = tree.query(coords, n_neighbors + 1)
 
@@ -224,13 +270,10 @@ def atmostk_neighbors_graph(
 		distances = distances[:, :n_neighbors]
 		indices = indices[:, :n_neighbors]
 
-	# 3) Global threshold via percentile
-	all_distances = distances.ravel()
-	threshold = np.percentile(
-		all_distances,
-		100 * (1 - k / n_samples),
-		interpolation='higher'
-	)
+	# Robust physical-density threshold derived from first-neighbour spacing.
+	# Nodes may have fewer than k neighbours and GCNConv supplies self-loops.
+	first_neighbor = distances[:, 0]
+	threshold = 1.5 * np.quantile(first_neighbor, 0.90)
 
 	# 4) Build adjacency in COO format
 	rows = []
@@ -245,18 +288,14 @@ def atmostk_neighbors_graph(
 
 		# Keep only up to k of the closest among those within threshold
 		if len(valid_neighbors) > k:
-		    valid_neighbors = valid_neighbors[:k]
-		    valid_dists = valid_dists[:k]
-		# Ensure at least one connection if no valid neighbors
-		elif len(valid_neighbors) == 0 and len(indices[i]) > 0:
-			valid_neighbors = indices[i][:1]
-			valid_dists = distances[i][:1]
+			valid_neighbors = valid_neighbors[:k]
+			valid_dists = valid_dists[:k]
 
 		rows.extend([i] * len(valid_neighbors))
 		cols.extend(valid_neighbors)
 
 		if mode == 'distance':
-		    data.extend(valid_dists)
+			data.extend(valid_dists)
 		else:  # 'connectivity'
 			data.extend([1.0] * len(valid_neighbors))
 
@@ -270,46 +309,62 @@ def atmostk_neighbors_graph(
 	return adjacency.tocsr()
 
 
-def coords_to_graph(coords, gmethod='knn', mode='connectivity', radius=7):
+GRAPH_METHODS = ('knn', 'atmostk', 'delaunay', 'radius')
+
+
+def coords_to_graph(coords, gmethod='atmostk', mode='connectivity', k=7, radius=7.0):
 	"""
-	Constructs a graph from coordinates using specified method (k-nearest neighbors, k-atmost neighbors or radius-based).
+	Constructs a graph from coordinates using specified method (k-nearest neighbors, k-atmost neighbors,
+	Delaunay triangulation or radius-based).
 
 	Args:
 		coords (numpy.ndarray): Array of coordinates representing nodes.
 		mode: ‘connectivity’, ‘distance’
-		gmethod (str, optional): Graph construction method, either 'knn' or 'radius'. Defaults to 'knn'.
+		gmethod (str, optional): Graph construction method. Defaults to 'atmostk',
+									matching configs/config.yaml.
+		k (int, optional): Number of nearest neighbours. Used by 'knn' and 'atmostk', ignored by
+									'delaunay' and 'radius'. Clamped to n_cells - 1 for small ROIs.
+									Defaults to 7.
 		radius (float, optional): Radius for radius-based graph construction. Used only if gmethod='radius'.
 									Defaults to 7.
 
 	Returns:
 		G (scipy.sparse.csr_matrix): The constructed graph adjacency matrix.
 	"""
+	coords = np.asarray(coords)
+	if coords.ndim != 2:
+		raise ValueError("coords must be a 2D array")
+	n_samples = coords.shape[0]
+
 	if gmethod == 'radius':
 		G = radius_neighbors_graph(
-			coords, 
-			radius, 
+			coords,
+			radius,
 			mode=mode,
-			include_self=False) 
-	elif gmethod == 'knn':
-		G = kneighbors_graph(
-			coords, 
-			radius, 
-			mode=mode, 
 			include_self=False)
+	elif gmethod == 'knn':
+		if n_samples < 2:
+			return csr_matrix((n_samples, n_samples), dtype=np.float64)
+		G = kneighbors_graph(
+			coords,
+			clamp_k(k, n_samples, context='knn'),
+			mode=mode,
+			include_self=False)
+		G = G.maximum(G.T)
 	elif gmethod == 'atmostk':
 		G = atmostk_neighbors_graph(
-			coords, 
-			radius, 
-			mode=mode, 
+			coords,
+			k,
+			mode=mode,
 			include_self=False)
 	elif gmethod == 'delaunay':
 		G = delaunay_graph(
-			coords, 
+			coords,
 			mode=mode)
 	else:
-		raise NotImplementedError(f"{gmethod} Not Implemented")
+		raise ValueError(f"Unsupported gmethod {gmethod!r}; choose one of {GRAPH_METHODS}")
 	if mode == 'distance':
-		G.data = distance_to_similarity(G)
+		G = distance_to_similarity(G)
 	return G
 
 def graph_feature_vector(graph, gcriterion='heat_trace', feature_dim=10):
@@ -445,10 +500,7 @@ def patient_level_scores(y, y_pred, y_proba, patients, mode='Test', pcriterion='
 		patients_labels[patient].append(int(label))
 
 	unique_pred_patients_prob, unique_pred_patients_label, unique_patients_label = [], [], []
-
 	for patient in unique_patients:
-		#correct_predictions = [1 if (pred == label == 1) else 0 
-		#						for pred, label in zip(patients_preds[patient], patients_labels[patient])]
 		roi_probs = np.array(patients_probs[patient])
 		roi_labels = np.array(patients_labels[patient])
 
@@ -456,11 +508,11 @@ def patient_level_scores(y, y_pred, y_proba, patients, mode='Test', pcriterion='
 		unique_patients_label.append(patient_label)
 
 		if pcriterion == 'majority':
-			# Check if the majority of predictions match the majority of labels
-			roi_preds = (roi_probs >= 0.5).astype(int)
-			vote_patient = Counter(roi_preds).most_common(1)[0][0]
-			prob_patient = np.mean(roi_probs[roi_preds == vote_patient])
-			unique_pred_patients_label.append(int(vote_patient))
+			# A patient score must not be the most extreme ROI, because that makes
+			# AUC depend on the number of ROIs available for a patient.
+			prob_patient = float(np.mean(roi_probs))
+			vote_patient = int(prob_patient >= 0.5)
+			unique_pred_patients_label.append(vote_patient)
 			unique_pred_patients_prob.append(prob_patient)
 
 		elif pcriterion == 'weighted_mean': 
@@ -508,7 +560,7 @@ def patient_level_scores(y, y_pred, y_proba, patients, mode='Test', pcriterion='
 			f"{mode} Balanced Accuracy {pcriterion}": bal_acc_,
 	}
 
-	# ---------------- Plot & log Patient-level ROC ----------------
+	# Plot & log Patient-level ROC
 	fpr_patient, tpr_patient, _ = roc_curve(unique_patients_label, unique_pred_patients_prob)
 
 	plt.figure()
@@ -521,7 +573,7 @@ def patient_level_scores(y, y_pred, y_proba, patients, mode='Test', pcriterion='
 	wandb.log({f"{mode}_Patient_Level_ROC": wandb.Image(plt)})
 	plt.close()
 
-	# ---------------- ROI-level metrics & ROC (Optional) ----------------
+	# ROI-level metrics & ROC
 	#  The question specifically mentions plotting AUC-ROC at ROI level as well.
 	roi_auc = roc_auc_score(y, y_proba)
 	fpr_roi, tpr_roi, _ = roc_curve(y, y_proba)
@@ -628,7 +680,7 @@ def k_fold_split(dataset, k=5, random_state=None):
 			if data is None:
 				train_set[key] = None
 				test_set[key] = None
-			elif key == 'markers':
+			elif key in ['markers', 'celltypes']:
 				train_set[key] = data
 				test_set[key] = data
 			else:
@@ -756,7 +808,7 @@ def visualise_cellgraph(graph, random_state=42, node_labels=None, show=True, spa
 	
 	if node_labels is not None and add_legend:
 		legend_handles = [patches.Patch(color=sm.to_rgba(i), label=label) for i, label in enumerate(unique_labels)]
-		ax.legend(handles=legend_handles, ncol=5, loc='upper center', bbox_to_anchor=(1.1, 1), borderaxespad=0.)
+		ax.legend(handles=legend_handles, ncol=5, loc='upper center', bbox_to_anchor=(0.5, 1.15), borderaxespad=0.)
 	ax.axis('off')
 	if show:
 		plt.show()

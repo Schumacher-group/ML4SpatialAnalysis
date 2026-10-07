@@ -1,36 +1,54 @@
+from __future__ import annotations
+
+from typing import Dict, Iterable
+
 import numpy as np
 import pandas as pd
-import pickle
-import sys
-import squidpy as sq
-path0 = '../../'
-sys.path.append(path0+'phenotyping/')
-from phenotyping_utils import generate_anndata_from_ark_analysis
 
-def neighbours(fovs):
-    store = {}    
-    for ID in  set(fovs):
-        .#select one acquisition
-        celltypes = sub_adata.obs.Pixie.value_counts()[sub_adata.obs.Pixie.value_counts()>50].index.values#take cell types that have at least 50 cells in the acquisition
-        sq.gr.spatial_neighbors(sub_adata,coord_type='grid',n_neighs=6,radius = (0,cell_radius))
-        sq.gr.nhood_enrichment(sub_adata, cluster_key='Pixie')
-        sq.gr.interaction_matrix(sub_adata, cluster_key='Pixie')
-        enrichment = sub_adata.uns['Pixie_nhood_enrichment']['zscore']
-        a = np.array(sub_adata.obs['Pixie'].cat.categories)#label list
-        enrichment = pd.DataFrame(enrichment,index=a,columns=a)
-        enrichment = enrichment.loc[celltypes,celltypes]#filter out the cells types that have few cells in the fov
-        contact = sub_adata.uns['Pixie_interactions']/sub_adata.uns['Pixie_interactions'].sum()#number of links between cell types
-        contact = pd.DataFrame(contact,index=a,columns=a)
-        contact = contact.loc[celltypes,celltypes]#filter out the cells types that have few cells in the fov
-        store[ID]={'interaction':contact,'enrichment':enrichment}
+
+def neighbourhood_matrices(
+    adata,
+    fovs: Iterable[str],
+    fov_key: str = "fov",
+    cluster_key: str = "cell_meta_cluster",
+    radius: float = 20.0,
+    min_cells_per_type: int = 50,
+) -> Dict[str, dict]:
+    """Return contact and enrichment matrices for each requested ROI."""
+
+    import squidpy as sq
+
+    store = {}
+    for roi_id in sorted(set(fovs)):
+        subset = adata[adata.obs[fov_key] == roi_id].copy()
+        if subset.n_obs < 2:
+            continue
+        counts = subset.obs[cluster_key].value_counts()
+        retained = counts[counts >= min_cells_per_type].index
+        if len(retained) == 0:
+            continue
+        sq.gr.spatial_neighbors(subset, coord_type="generic", radius=radius)
+        sq.gr.nhood_enrichment(subset, cluster_key=cluster_key)
+        sq.gr.interaction_matrix(subset, cluster_key=cluster_key)
+
+        categories = np.asarray(subset.obs[cluster_key].cat.categories)
+        enrichment = pd.DataFrame(
+            subset.uns[f"{cluster_key}_nhood_enrichment"]["zscore"],
+            index=categories,
+            columns=categories,
+        ).loc[retained, retained]
+        contacts = np.asarray(subset.uns[f"{cluster_key}_interactions"], dtype=float)
+        contacts /= max(float(contacts.sum()), 1.0)
+        contacts = pd.DataFrame(contacts, index=categories, columns=categories).loc[
+            retained, retained
+        ]
+        store[str(roi_id)] = {"interaction": contacts, "enrichment": enrichment}
     return store
-cell_table_path=path0+'../segmentation/cell_table_Denoised/cell_table_size_normalized_cell_labels.csv'
-biosamples_path=path0+'../IMC_data/ExtraDocs/processed_response.csv'
-tb = pd.read_csv(cell_table_path)
-cell_radius = tb['major_axis_length'].quantile(0.9)#take the 90% of the cell lenght as a cutoff for cell-cell contact distance, this is around 20 micrometer
-adata = generate_anndata_from_ark_analysis(cell_table_path=cell_table_path,biosamples_path=biosamples_path)
-core = adata[adata.obs['SAMPLE_TYPE_(CORE/RESECTION)']=='CORE'].copy()
 
-store = neighbours(adata.obs.acquisition_ID.drop_duplicates())#store is a nested dictionary.
-with open('neighbours_matrix.pkl', 'wb') as f:
-    pickle.dump(store, f)
+
+def contact_radius_from_cell_table(cell_table, quantile: float = 0.9) -> float:
+    values = pd.to_numeric(cell_table["major_axis_length"], errors="coerce")
+    radius = float(values.quantile(quantile))
+    if not np.isfinite(radius) or radius <= 0:
+        raise ValueError("Cannot estimate a positive contact radius")
+    return radius

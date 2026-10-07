@@ -2,9 +2,19 @@ import pickle
 import numpy as np
 from sklearn.linear_model import LogisticRegression
 import wandb
+import torch
+import pandas as pd
+from torch_geometric.loader import DataLoader
+import matplotlib.pyplot as plt
+
 from models.abstract import AbstractModel
-from mainutils.utils import compute_scores_train, compute_scores
+from mainutils.utils import compute_scores
 from mainutils.utils import leave_one_out_split, patient_level_scores
+from mainutils.utils import visualise_cellgraph
+
+def _positive_probability(values):
+	values = np.asarray(values)
+	return values[:, 1] if values.ndim == 2 else values.reshape(-1)
 
 class ModelEvaluation(AbstractModel):
 	"""
@@ -15,7 +25,7 @@ class ModelEvaluation(AbstractModel):
 		feature_names (list): List of feature names.
 		clf_name (str): Name of the classifier type.
 	"""
-	def __init__(self, config, logname, logger=None):
+	def __init__(self, config, logger=None):
 		"""
 		Initializes the ModelEvaluation object.
 
@@ -25,6 +35,8 @@ class ModelEvaluation(AbstractModel):
 		super().__init__(config, logger)
 		self.classifier = None
 		self.scaler = None
+		self.device = config[config['name']]['device']
+		self.logger = logger
 
 	def run(self, dataset, logname):
 		"""
@@ -35,43 +47,20 @@ class ModelEvaluation(AbstractModel):
 		"""
 		if self.config['eval'] == 'split':
 			filename = f"{self.config['LOG_PATH']}/{self.config['name']}_{logname}.pkl"
-			self.load_model(logname)
+			self.load_model(filename)
 			self.evaluate(dataset['test'], mode='Test')
+			self.attribution(dataset['test'])
 
 		elif self.config['eval'] == 'leaveOneOut':
 			y_test = np.array([])
 			y_pred_test = np.array([])
 			y_pred_test_prob = np.array([])
 			patient_label = np.array([])
-			for i, (train_i, test_i) in enumerate(leave_one_out_split(dataset)):
+			for i, (_, test_i) in enumerate(leave_one_out_split(dataset)):
 				filename = f"{self.config['LOG_PATH']}/{logname}_leaveoneout_{i+1}_patient_{test_i['patient'][0]}.pkl"
 				self.load_model(filename)
-
-				# y_pred_train_i = self.predict(train_i)
-				# y_pred_train_prob_i = self.predict_proba(train_i)[:, 1]
-
-				# print(f"Evaluating the {self.config['name']} Model on Training Set")
-				# print(f"[Fold {i+1}] Evaluating {self.config['name']} Model on TRAIN set")
-				# train_metrics = compute_scores(
-				# 				train_i['labels'],          # ground truth
-				# 				y_pred_train_i,             # predicted labels
-				# 				y_pred_train_prob_i,        # predicted probabilities
-				# 				mode='Train'
-				# )
-				# self.log_metrics(train_metrics, mode=f"LOO_ROI_Train_Fold{i+1}")
-
-				# metrics_train = patient_level_scores(
-				# 				train_i['labels'], 
-				# 				y_pred_train_i, 
-				# 				y_pred_train_prob_i, 
-				# 				train_i['patient'], 
-				# 				mode='Train', 
-				# 				pcriterion=self.config['pcriterion'])
-				# print('Metrics at Patient Level', metrics_train)
-				# self.log_metrics(metrics_train, mode=f"LeaveOneOutPatientLevelTrain {i+1}")
-
 				y_pred_test_i = self.predict(test_i)
-				y_pred_test_prob_i = self.predict_proba(test_i)[:, 1] 
+				y_pred_test_prob_i = _positive_probability(self.predict_proba(test_i))
 
 				y_test = np.concatenate([y_test, test_i['labels']])
 				y_pred_test = np.concatenate([y_pred_test, y_pred_test_i])
@@ -90,10 +79,49 @@ class ModelEvaluation(AbstractModel):
 		else:
 			raise NotImplementedError(f"{self.config['eval']} Evaluation not implemented")
 
+	def attribution(self, data):
+		"""
+		Computes attribution scores for a given data set.
+
+		Args:
+			data (np.ndarray): A dictionary containing: expressions, enrichments (None for cell-cell case), graphs, labels, and feature names.
+							expressions is a Feature matrix or a list of node attribute matrix.
+		"""
+		if self.config['name'] == 'gnn':
+			#self.classifier.latent_attribution(data)
+			self.pyg_attribution(data, self.config['tok_k_attr'])
+			#self.classifier.gradient_attribution(data, self.config['tok_k_attr'])
+		elif self.config['name'] in ['logistic', 'randomforest', 'xgboost']:
+			if self.config['name'] == 'logistic':
+				feature_importances = self.classifier.coef_.flatten()
+			else:
+				feature_importances = self.classifier.feature_importances_
+			feature_names = data['markers']
+			sorted_indices = feature_importances.argsort()[::-1][:self.config['tok_k_attr']]
+			sorted_feature_importances = feature_importances[sorted_indices]
+			sorted_feature_names = np.array(feature_names)[sorted_indices]
+			plt.figure(figsize=(16, 10))
+			plt.bar(range(len(sorted_feature_importances)), sorted_feature_importances, tick_label=sorted_feature_names)
+			plt.xlabel('Proteins', fontsize=28)
+			plt.ylabel('Importance Score', fontsize=28)
+			plt.title(f"Logistic Regression Classifer", fontsize=32)
+			plt.xticks(rotation=45, ha='right', fontsize=28)
+			plt.subplots_adjust(bottom=0.2)
+			plt.tight_layout()
+			buffer = io.BytesIO()
+			buffer.seek(0)
+			plt.savefig(buffer, format='png')
+			self.logger.log({f"Importance scores {self.config['name']} classifer": wandb.Image(Image.open(buffer))})
+		else:
+			raise NotImplementedError(f"Attribution not implemented for {self.config['name']}")
+
 	def wandb_log_figure(self, fig, name):
 		"""
 		Helper to log a matplotlib figure to W&B or any logger with .log(...).
 		"""
+		from PIL import Image
+		import io
+		# Save the figure to a BytesIO buffer
 		buf = io.BytesIO()
 		fig.savefig(buf, format='png')
 		buf.seek(0)
@@ -112,7 +140,9 @@ class ModelEvaluation(AbstractModel):
 			all_rois, all_labels = [], []
 			for x_batch in loader:
 				x_batch = x_batch.to(self.device)
-				_, latent_z = self.model.hidden_representation(x_batch.x, x_batch.edge_index, x_batch.edge_weight, x_batch.batch)
+				_, latent_z = self.classifier.model.hidden_representation(
+					x_batch.x, x_batch.edge_index, x_batch.edge_attr, x_batch.batch
+				)
 				all_rois.append(latent_z)
 				all_labels.append(x_batch.stain_y)
 			all_rois = torch.cat(all_rois, dim=0).cpu().numpy()
@@ -122,12 +152,12 @@ class ModelEvaluation(AbstractModel):
 			scaler = StandardScaler()
 			latent_patients = scaler.fit_transform(all_rois)
 			reducer = PCA(n_components=2)
-			projections = reducer.fit_transform(all_rois)
+			projections = reducer.fit_transform(latent_patients)
 		elif method == 'UMAP':
 			reducer = umap.UMAP()
 			projections = reducer.fit_transform(all_rois)
 		else:
-			raise NotImplementedError('Not Implemented')
+			raise NotImplementedError(f"{method} not implemented")
 		
 		unique_labels = np.unique(all_labels)
 		colors = plt.cm.get_cmap('tab10', len(unique_labels))
@@ -145,21 +175,22 @@ class ModelEvaluation(AbstractModel):
 	def pyg_attribution(self, data, topk=10):
 		from torch_geometric.explain import Explainer, GNNExplainer
 		import torch_geometric.utils as utils
-		self.model.eval()
+		self.classifier.model.eval()
+		from models.graph_networks import ModelProbs
 		explainer = Explainer(
-						model=self.model,
-						algorithm=GNNExplainer(epochs=100),
+						model=ModelProbs(self.classifier.model),
+						algorithm=GNNExplainer(epochs=10),
 						explanation_type='phenomenon',
 						node_mask_type='attributes',
 						edge_mask_type='object',
 						model_config=dict(
-						mode='multiclass_classification',
+						mode='binary_classification',
 						task_level='graph',
-						return_type='log_probs',
+						return_type='probs',
 						),
 					)
 
-		pyg_dataset = self.to_pyg(data)
+		pyg_dataset = self.classifier.to_pyg(data)
 		loader = DataLoader(pyg_dataset, batch_size=1, shuffle=False)
 		
 		feature_names = np.array(data['markers'])
@@ -174,11 +205,10 @@ class ModelEvaluation(AbstractModel):
 		labels_dict = {1:'Responder', 0:'Non-Responder'}
 		
 		for i, x_batch in enumerate(loader):
+			x_batch.cell_labels = data['cell_labels'][i]
 			x_batch = x_batch.to(self.device)
 
 			kwargs = {'edge_weight':x_batch.edge_attr, 'batch': x_batch.batch}
-			if hasattr(x_batch, 'batch'):
-				kwargs['batch'] = x_batch.batch
 
 			explanation = explainer(
 					x_batch.x, 
@@ -226,10 +256,6 @@ class ModelEvaluation(AbstractModel):
 				edge_attr=x_batch.edge_attr, 
 				num_nodes=x_batch.x.shape[0]
 			)
-			if hasattr(x_batch, 'cell_labels'):
-				node_labels = x_batch.cell_labels
-			else:
-				node_labels = None
 
 			csr_adj_full = coo_adj_full.tocsr()
 
@@ -275,49 +301,61 @@ class ModelEvaluation(AbstractModel):
 			else:
 				for celltype, count in freq.items():
 					top_k_count_celltypesnegative[celltype] += count			
-
+		top_k_count_positive.pop('Tbet', None)
+		#top_k_count_negative.pop('Tbet', None)
 		fig3, ax3 = plt.subplots(figsize=(12, 6))
-		indices = np.arange(len(top_k_count_positive))
+		sorted_items = sorted(
+			top_k_count_positive.items(),
+			key=lambda x: x[1],
+			reverse=True
+		)
+		marker_features, marker_values = zip(*sorted_items)
+
+		marker_indices = np.arange(len(marker_features))
 		# Plot the bars
-		ax3.bar(indices, top_k_count_positive.values(), 0.35, label='Responder', color='skyblue')
-		ax3.bar(indices + 0.35, top_k_count_negative.values(), 0.35, label='Non-responder', color='salmon')
+		ax3.bar(marker_indices, marker_values, 0.35, label='Responder', color='skyblue')
+		#ax3.bar(indices + 0.35, top_k_count_negative.values(), 0.35, label='Non-responder', color='salmon')
 
 		# Add some text for labels, title and axes ticks
 		ax3.set_xlabel('Features', fontsize=14)
 		ax3.set_ylabel(f"Top  {topk} Frequency", fontsize=14)
 		ax3.set_title(f"Top {topk} Markers for Responder vs Non-Responder", fontsize=16)
-		ax3.set_xticks(indices + 0.35 / 2)
-		ax3.set_xticklabels(list(top_k_count_positive.keys()), rotation=45, ha='right')
+		ax3.set_xticks(marker_indices + 0.35 / 2)
+		ax3.set_xticklabels(marker_features, rotation=45, ha='right')
 		ax3.legend()
 		plt.tight_layout()
 		
-		self.wandb_log_figure(fig3, 'Most Frequent Marker GNNExplainer across ROIs')
+		self.wandb_log_figure(fig3, 'New Most Frequent Marker GNNExplainer across ROIs')
 
 
 		fig4, ax4 = plt.subplots(figsize=(12, 6))
-		indices = np.arange(len(top_k_count_celltypespositive))
+		sorted_items = sorted(
+			top_k_count_celltypespositive.items(),
+			key=lambda x: x[1],
+			reverse=True
+		)
+		celltype_features, celltype_values = zip(*sorted_items)
+		celltype_indices = np.arange(len(celltype_features))
 		# Plot the bars
-		val_pos = [el/(i+1) for el in list(top_k_count_celltypespositive.values())]
-		val_neg = [el/(i+1) for el in list(top_k_count_celltypespositive.values())]
+		#val_neg = [el/(i+1) for el in list(top_k_count_celltypesnegative.values())]
 		
-		ax4.bar(indices, val_pos, 0.35, label='Responder', color='skyblue')
-		ax4.bar(indices + 0.35, val_neg, 0.35, label='Non-responder', color='salmon')
+		ax4.bar(celltype_indices, celltype_values, 0.35, label='Responder', color='skyblue')
+		#ax4.bar(indices + 0.35, val_neg, 0.35, label='Non-responder', color='salmon')
 
 		# Add some text for labels, title and axes ticks
 		ax4.set_xlabel('Features', fontsize=14)
 		ax4.set_ylabel(f"Top  {topk} Frequency", fontsize=14)
 		ax4.set_title(f"Top {topk} Markers for Responder vs Non-Responder", fontsize=16)
-		ax4.set_xticks(indices + 0.35 / 2)
-		ax4.set_xticklabels(list(top_k_count_celltypespositive.keys()), rotation=45, ha='right')
+		ax4.set_xticks(celltype_indices + 0.35 / 2)
+		ax4.set_xticklabels(celltype_features, rotation=45, ha='right')
 		ax4.legend()
 		plt.tight_layout()
-		self.wandb_log_figure(fig3, 'Most Frequent Celltypes GNNExplainer across ROIs')
+		self.wandb_log_figure(fig4, 'New Most Frequent Celltypes GNNExplainer across ROIs')
 
 
 	def gradient_attribution(self, data, topk=10, target_class=1):
 		feature_names = data['markers']
-		import matplotlib.pyplot as plt
-		self.model.eval()
+		self.classifier.model.eval()
 		pyg_dataset = self.to_pyg(data)
 		loader = DataLoader(pyg_dataset, batch_size=1, shuffle=False)
 		avg_node_gradients, std_node_gradients = [], []
@@ -377,7 +415,4 @@ class ModelEvaluation(AbstractModel):
 		plt.legend(fontsize=12, prop={'size': 8})
 		plt.xticks(ticks=np.arange(len(feature_names)), labels=grad_df.index, rotation=45, ha='right')
 		plt.tight_layout()
-		buffer = io.BytesIO()
-		buffer.seek(0)
-		plt.savefig(buffer, format='png')
-		self.logger.log({'Average gradients across ROIs': wandb.Image(Image.open(buffer))})
+		self.wandb_log_figure(fig, 'Average gradients across ROI')
