@@ -21,6 +21,10 @@ MODELS_DICT = {
 	'gnn' : GraphConvolutionalNetwork,
 }
 
+def _positive_probability(values):
+	values = np.asarray(values)
+	return values[:, 1] if values.ndim == 2 else values.reshape(-1)
+
 class ModelTrainer(AbstractModel):
 	"""
 	This class handles training, testing, and evaluation of models.
@@ -81,9 +85,12 @@ class ModelTrainer(AbstractModel):
 				self.fit(dataset['train'])
 				if (epoch + 1) % self.config['test_every'] == 0:
 					self.evaluate(dataset['train'], mode='Train')
+				# The test set is evaluated exactly once. Use the patient benchmark
+				# entry point when validation-based early stopping is required.
+				if (epoch + 1) == self.config['nm_epochs']:
 					print(f"Evaluating on Test Set")
 					self.evaluate(dataset['test'], mode='Test')
-				if (epoch + 1) % self.config['save_every'] == 0:			
+				if (epoch + 1) % self.config['save_every'] == 0 or (epoch + 1) == self.config['nm_epochs']:
 					print(f"Saving the {self.config['name']} Model")
 					self.save_model(logname=logname)
 
@@ -97,7 +104,7 @@ class ModelTrainer(AbstractModel):
 					self.fit(train_i)
 
 				y_pred_train_i = self.predict(train_i)
-				y_pred_train_prob_i = self.predict_proba(train_i)[:, 1]
+				y_pred_train_prob_i = _positive_probability(self.predict_proba(train_i))
 
 				print(f"Evaluating the {self.config['name']} Model on Training Set")
 				print(f"[Fold {i+1}] Evaluating {self.config['name']} Model on TRAIN set")
@@ -120,7 +127,7 @@ class ModelTrainer(AbstractModel):
 				self.log_metrics(metrics_train, mode=f"LeaveOneOutPatientLevelTrain {i+1}")
 
 				y_pred_test_i = self.predict(test_i)
-				y_pred_test_prob_i = self.predict_proba(test_i)[:, 1] 
+				y_pred_test_prob_i = _positive_probability(self.predict_proba(test_i))
 
 				y_test = np.concatenate([y_test, test_i['labels']])
 				y_pred_test = np.concatenate([y_pred_test, y_pred_test_i])
@@ -140,5 +147,3 @@ class ModelTrainer(AbstractModel):
 			print('Metrics at Patient Level', metrics_test)
 		else:
 			raise NotImplementedError(f"{self.config['eval']} Evaluation not implemented")
-
-

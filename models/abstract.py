@@ -134,47 +134,6 @@ class AbstractModel(ABC):
 		metrics_patient = patient_level_scores(data['labels'], y_pred, y_proba, data['patient'], mode=mode, pcriterion=self.config['pcriterion'])
 		self.log_metrics(metrics_patient, mode=f"Patient Level {mode}")
 		print('Metrics at Patient Level', metrics_patient)
-		# if mode == 'Test':
-		# 	self.attribution(data)
-
-
-	def attribution(self, data):
-		"""
-		Computes attribution scores for a given data set.
-
-		Args:
-			data (np.ndarray): A dictionary containing: expressions, enrichments (None for cell-cell case), graphs, labels, and feature names.
-							expressions is a Feature matrix or a list of node attribute matrix.
-		"""
-
-		if self.config['name'] == 'gnn':
-			#self.classifier.latent_attribution(data)
-			self.classifier.pyg_attribution(data, self.config['tok_k_attr'])
-			#self.classifier.gradient_attribution(data, self.config['tok_k_attr'])
-		elif self.config['name'] in ['logistic', 'randomforest', 'xgboost']:
-			if self.config['name'] == 'logistic':
-				feature_importances = self.classifier.coef_.flatten()
-			else:
-				feature_importances = self.classifier.feature_importances_
-			feature_names = data['markers']
-			sorted_indices = feature_importances.argsort()[::-1][:self.config['tok_k_attr']]
-			sorted_feature_importances = feature_importances[sorted_indices]
-			sorted_feature_names = np.array(feature_names)[sorted_indices]
-			plt.figure(figsize=(16, 10))
-			plt.bar(range(len(sorted_feature_importances)), sorted_feature_importances, tick_label=sorted_feature_names)
-			plt.xlabel('Proteins', fontsize=28)
-			plt.ylabel('Importance Score', fontsize=28)
-			plt.title(f"Logistic Regression Classifer", fontsize=32)
-			plt.xticks(rotation=45, ha='right', fontsize=28)
-			plt.subplots_adjust(bottom=0.2)
-			plt.tight_layout()
-			buffer = io.BytesIO()
-			buffer.seek(0)
-			plt.savefig(buffer, format='png')
-			self.logger.log({f"Importance scores {self.config['name']} classifer": wandb.Image(Image.open(buffer))})
-		else:
-			raise NotImplementedError(f"Attribution not implemented for {self.config['name']}")
-
 
 	def save_model(self, logname):
 		"""

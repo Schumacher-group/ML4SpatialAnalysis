@@ -8,6 +8,24 @@ from torch_geometric.nn import TopKPooling, SAGPooling, EdgePooling
 from torch_geometric.nn import MLP
 from torch_geometric.nn import GraphNorm, BatchNorm, LayerNorm
 
+class ModelProbs(nn.Module):
+	def __init__(self, model):
+		super().__init__()
+		self.model = model
+
+	def forward(self, *args, **kwargs):
+		"""
+		Forward pass through the model.
+
+		Args:
+			args: Positional arguments.
+			kwargs: Keyword arguments.
+
+		Returns:
+			tuple: Model output and hidden representation.
+		"""
+		return torch.sigmoid(self.model(*args, **kwargs))
+
 class GCN(nn.Module):
 	"""
 	Graph Convolutional Network (GCN) model for node classification.
