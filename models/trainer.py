@@ -2,6 +2,7 @@ import pickle
 import numpy as np
 from mainutils.utils import compute_scores_train, compute_scores
 from mainutils.utils import leave_one_out_split, patient_level_scores
+from mainutils.utils import train_test_split
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from xgboost import XGBClassifier
@@ -49,7 +50,7 @@ class ModelTrainer(AbstractModel):
 			feature_names (list, optional): List of feature names. Defaults to None.
 			logfile (str, optional): Name of the log file. Defaults to None.
 		"""
-		super().__init__(config, logger)
+		super().__init__(config, logger, logfile=logfile)
 		self.seed = seed
 		seed_everything(self.seed)
 		# Choose and initialize classifier based on configuration
@@ -81,13 +82,29 @@ class ModelTrainer(AbstractModel):
 
 		print(f"Fitting {self.config['name']} with {self.config['eval']} training")
 		if self.config['eval'] == 'split':
+			val_ratio = self.config.get('val_ratio', 0) or 0
+			epoch_curve = bool(self.config.get('epoch_curve', False))
+
+			train_set = dataset['train']
+			val_set = None
+			if val_ratio > 0:
+				# Carve validation out of train with the same patient-grouped,
+				# label-stratified splitter, so no patient spans train and val.
+				train_set, val_set = train_test_split(
+					dataset['train'], test_size=val_ratio, random_state=self.seed
+				)
+				print(f"Validation split: {len(train_set['labels'])} train ROIs "
+						f"({len(set(train_set['patient']))} patients), "
+						f"{len(val_set['labels'])} val ROIs "
+						f"({len(set(val_set['patient']))} patients)")
+
 			for epoch in range(self.config['nm_epochs']):
-				self.fit(dataset['train'])
+				self.fit(train_set)
 				if (epoch + 1) % self.config['test_every'] == 0:
-					self.evaluate(dataset['train'], mode='Train')
-				# The test set is evaluated exactly once. Use the patient benchmark
-				# entry point when validation-based early stopping is required.
-				if (epoch + 1) == self.config['nm_epochs']:
+					self.evaluate(train_set, mode='Train')
+				if val_set is not None:
+					self.evaluate(val_set, mode='Val')
+				if epoch_curve or (epoch + 1) == self.config['nm_epochs']:
 					print(f"Evaluating on Test Set")
 					self.evaluate(dataset['test'], mode='Test')
 				if (epoch + 1) % self.config['save_every'] == 0 or (epoch + 1) == self.config['nm_epochs']:

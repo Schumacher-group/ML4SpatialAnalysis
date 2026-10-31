@@ -28,19 +28,23 @@ conda env create -f requirements.yaml
 
 ## Running the Code
 
-To run the code with specified hyperparameters in a config file:
+Use the conda environment from `requirements.yaml` (python 3.8, torch 1.12, torch_geometric 2.6). ROI-level GNN or classical model, one run per config:
 
 ```bash
-python main.py configs/config.yaml
+python main.py --config configs/config.yaml
 ```
+
+`main.py` takes only `--config`; to sweep settings write one yaml per cell with `scripts/make_variant_configs.py` (gconv x gmethod x k x node_f x seed, plus a manifest for `scripts/run_manifest_cpu.sbatch`) and summarise the metric sinks with `scripts/collect_variant_results.py`.
+
+Patient-level benchmark (package `patientgnn/`, config `configs/patient_benchmark.yaml`):
 
 ```bash
 # Build the versioned QC cache and run all patient-level comparisons.
-python run_patient_benchmark.py \
+python -m patientgnn.run_patient_benchmark \
   --config configs/patient_benchmark.yaml \
   --build-cache
 
-bash scripts/submit_regression.sh
+bash scripts/submit_regression.sh   # slurm: cache -> classical baselines -> DeepSets/GNN
 ```
 
 Compare `expressions`, `celltypes`, and `combined` inputs for:
@@ -53,12 +57,16 @@ Compare `expressions`, `celltypes`, and `combined` inputs for:
 - A two-layer residual GINE using physical contact distances.
 - An edge-shuffled negative control for the combined GNN.
 
+## Data
+
+`dataset.DATA_PATH` holds `<cell_filename>.csv` (one row per cell: `fov`, `cell_meta_cluster`, `centroid-0`, `centroid-1`, the marker columns, optionally `qc_pass`) and `<response_filename>.csv`. The loader expects the `CleanCohort_Metadata` schema: `LEAP_ID`, `Sample_Type_(pre/post treatment)`, `NACT_Treatment _Group`, `Response`, `Patient_ID`, `Stain_Batch`. The older `processed_response_RCB` file is not supported. The manuscript cohort has 63 patients (37 responders / 26 non-responders). Patient metadata is not tracked in this repository; place the file in `DATA_PATH` and pin the version you mean in `response_filename`, as later revisions have different labels.
+
 ## Attribution Analysis
 
-Attribution analysis of a pretrained model:
+Evaluate and attribute a saved run. `main.py` stamps run names with `time.time()`; the newest matching model is used unless `--run <timestamp>` is given:
 
 ```bash
-python run_attribution.py configs/config.yaml
+python run_evaluation.py --config configs/config.yaml [--run 1753249753.4735453]
 ```
 
 ## Code Repository Structure
@@ -71,16 +79,15 @@ python run_attribution.py configs/config.yaml
 3. **logmodels/**: Stores pretrained models.
 
 4. **models/**: Contains all ML models and their training:
-    - `factory.py`: Implements ML models.
+    - `graph_networks.py`, `gcn.py`: GNN architectures and their training wrapper.
     - `trainer.py`: Defines a class for feature preparation, training, and evaluation.
-    - `attribution.py`: Analyzes weights/features for interpretability.
+    - `evaluation.py`: Analyzes weights/features for interpretability.
 
-5. **utils/**: Holds common functions used in different parts of the code:
-    - `utils.py`
+5. **mainutils/**: Graph construction, splits, metrics (`utils.py`) and train-fit marker normalisation (`normalization.py`).
 
-6. **main.py**: Used for dispatching experiments.
+6. **patientgnn/**: Patient-level benchmark (cohort cache, classical baselines, DeepSets/GINE).
 
-    ./response_prediction.sh config/config.yaml model.name=xgboost model.fnorm=log1p
+7. **main.py**: Used for dispatching experiments.
 
-7. **run_attribution.py**: Dispatches attribution methods.
+8. **run_evaluation.py**: Dispatches attribution methods on a saved run.
 ```

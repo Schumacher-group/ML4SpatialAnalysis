@@ -15,20 +15,22 @@ from mainutils.utils import visualise_cellgraph
 import io
 from PIL import Image
 from mainutils.utils import coords_to_graph
-from patientgnn.normalization import MarkerNormalizer
+from mainutils.normalization import MarkerNormalizer
 
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from models.graph_networks import GCN, SSGCN, EdgeWeightedGCN, HierarchicalGCN, AttentionGCN
+from models.graph_networks import GCN, SSGCN, EdgeWeightedGCN, HierarchicalGCN, AttentionGCN, DeepGCN, DeepGINE
 
 GCN_DICT = {
 			'gcn': GCN,
 			'ssgcn': SSGCN,
 			'edgegcn': EdgeWeightedGCN,
 			'hiergcn': HierarchicalGCN,
-			'attngcn': AttentionGCN
+			'attngcn': AttentionGCN,
+			'deepgcn': DeepGCN,
+			'deepgine': DeepGINE
 
 }
 
@@ -65,6 +67,7 @@ class GraphConvolutionalNetwork:
 				k=7,
 				radius=7.0,
 				node_f='expressions',
+				node_f_scale='raw',
 				**kwargs):
 		"""
 		Initializes the TNBC GCN model and optimizer.
@@ -82,7 +85,10 @@ class GraphConvolutionalNetwork:
 		self.k = k
 		self.radius = radius
 		self.node_f = node_f
+		self.node_f_scale = node_f_scale
 		self.feature_normalizer = None
+		self._pyg_cache = {}
+		self._pyg_cache_token = None
 
 		self.device = torch.device(device)
 		gcn_params = kwargs.get(self.gconv, None)	
@@ -91,7 +97,7 @@ class GraphConvolutionalNetwork:
 		self.optim = torch.optim.AdamW(
 					self.model.parameters(), 
 					lr=lr, 
-					weight_decay=1e-5,
+					weight_decay=kwargs.get('weight_decay', 1e-5),
 					betas=(0.9, 0.999)
 			)
 
@@ -102,8 +108,21 @@ class GraphConvolutionalNetwork:
 				dtype=torch.float32,
 				device=self.device,
 			)
-		self.criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-		#self.criterion = FocalLoss(alpha=0.25, gamma=2)
+		loss_name = kwargs.get('loss', 'bce')
+		if loss_name == 'focal':
+			self.criterion = FocalLoss(alpha=kwargs.get('focal_alpha', 0.25),
+									   gamma=kwargs.get('focal_gamma', 2.0))
+		else:
+			self.criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+	@staticmethod
+	def _unit_rms(block, eps=1e-6):
+		"""Scale a feature block so its root-mean-square is 1."""
+		rms = torch.sqrt(torch.mean(block.float() ** 2))
+		return block / (rms + eps)
+
+	def _cache_token(self):
+		return id(self.feature_normalizer)
 
 	def to_pyg(self, data_dict):
 		"""
@@ -119,6 +138,15 @@ class GraphConvolutionalNetwork:
 		Returns:
 			dataset (list): List of PyTorch Geometric Data objects representing the samples.
 		"""
+		token = self._cache_token()
+		if token != self._pyg_cache_token:
+			self._pyg_cache = {}
+			self._pyg_cache_token = token
+		cache_key = id(data_dict)
+		cached = self._pyg_cache.get(cache_key)
+		if cached is not None and cached[0] == len(data_dict['labels']):
+			return cached[1]
+
 		dataset = []
 		num_samples = len(data_dict['labels'])
 		unique_celltypes = data_dict['celltypes']
@@ -142,6 +170,9 @@ class GraphConvolutionalNetwork:
 			elif self.node_f == 'celltypes':
 				node_features = celltype_one_hot
 			elif self.node_f == 'expressions_celltypes':
+				if self.node_f_scale == 'balanced':
+					graph_attributes = self._unit_rms(graph_attributes)
+					celltype_one_hot = self._unit_rms(celltype_one_hot)
 				node_features = torch.cat([graph_attributes, celltype_one_hot], dim=1)
 			else:
 				raise ValueError(f"Invalid option for use_features: {self.node_f}. Choose from 'expressions', 'celltypes', or 'both'.")
@@ -159,6 +190,9 @@ class GraphConvolutionalNetwork:
 			data_pyg = Data(x=node_features, edge_index=edge_index, edge_attr=edge_attr, y=label)
 
 			dataset.append(data_pyg)
+		if len(self._pyg_cache) > 3:
+			self._pyg_cache.clear()
+		self._pyg_cache[cache_key] = (num_samples, dataset)
 		return dataset
 
 	def fit(self, data):
@@ -233,7 +267,7 @@ class GraphConvolutionalNetwork:
 				preds_i, latent_z = self.model.hidden_representation(x_batch.x, x_batch.edge_index, x_batch.edge_attr, x_batch.batch)
 				#preds_i = F.softmax(preds_i, dim=1)
 				#preds_i = preds_i.argmax(dim=1).cpu().numpy()
-				preds_i = torch.sigmoid(preds_i).squeeze().cpu().numpy()
+				preds_i = torch.sigmoid(preds_i).reshape(-1).cpu().numpy()
 				preds.append(preds_i)
 			preds = np.concatenate(preds)
 			preds = (preds>=threshold).astype(int)
@@ -265,4 +299,4 @@ class GraphConvolutionalNetwork:
 				prob = torch.sigmoid(prob)
 				probs.append(prob)
 			probs = torch.cat(probs, dim=0).cpu().numpy()
-			return probs.squeeze()
+			return probs.reshape(-1)

@@ -2,6 +2,34 @@ __pycache__/
 data/
 wandb/
 .DS_Store
-patient-benchmark-*.out
-patient-cache-*.out
 artifacts/
+
+# Editor and notebook cruft
+.ipynb_checkpoints/
+*.swp
+*~
+Untitled*/
+
+# Slurm stdout/stderr
+*.out
+*.gpulog
+slurm-*.out
+hostname_*.out
+
+# Generated run configs, per-run logs and harvested metrics
+logs/
+
+# Symlinks into the shared data directory; the target path is machine-specific
+updated_cell_table.csv
+configs/updated_cell_table.csv
+
+# Saved model pickles
+*.pkl
+
+# notes stay local, only the readme is published
+docs/
+*.md
+!README.md
+
+# Patient-level metadata is never tracked
+CleanCohort_Metadata*.csv

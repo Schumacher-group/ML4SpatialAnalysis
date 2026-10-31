@@ -1,4 +1,6 @@
 import pickle
+import json
+import tempfile
 import numpy as np
 import wandb
 import matplotlib.pyplot as plt
@@ -19,9 +21,10 @@ class AbstractModel(ABC):
 		logger (wandb.Logger): W&B logger object (optional).
 	"""
 
-	def __init__(self, config, logger=None):
+	def __init__(self, config, logger=None, logfile=None):
 		self.config = config
 		self.logger = logger
+		self.logfile = logfile
 		self.scaler = None
 
 	def cellcell_to_featurisation(self, X):
@@ -185,15 +188,56 @@ class AbstractModel(ABC):
 
 	def log_metrics(self, metrics, mode='Train'):
 		"""
-		Logs the evaluation metrics to W&B.
+		Logs the evaluation metrics to W&B and to a JSON sink on disk.
 
 		Args:
 			metrics (dict): Dictionary containing evaluation metrics.
 		"""
 		metrics_table=[[key, value] for key, value in metrics.items()]
 		self.logger.log({
-					f"{mode} Metrics": 
+					f"{mode} Metrics":
 							wandb.Table(
-									data=metrics_table, 
+									data=metrics_table,
 								columns=['Metric', 'Value'])
 					})
+		self.record_metrics(metrics, mode=mode)
+
+	def record_metrics(self, metrics, mode='Train'):
+		"""
+		Appends metrics to {LOG_PATH}/metrics/{logfile}.json.
+		"""
+		logfile = getattr(self, 'logfile', None)
+		if not logfile:
+			return
+		outdir = os.path.join(self.config['LOG_PATH'], 'metrics')
+		os.makedirs(outdir, exist_ok=True)
+		path = os.path.join(outdir, f'{logfile}.json')
+
+		record = {}
+		if os.path.exists(path):
+			try:
+				with open(path) as handle:
+					record = json.load(handle)
+			except (ValueError, OSError):
+				record = {}
+		record.setdefault('config', {
+			'model': self.config['name'],
+			'gconv': self.config.get('gnn', {}).get('gconv'),
+			'gmethod': self.config.get('gnn', {}).get('gmethod'),
+			'gmode': self.config.get('gnn', {}).get('gmode'),
+			'k': self.config.get('gnn', {}).get('k'),
+			'node_f': self.config.get('gnn', {}).get('node_f'),
+			'fnorm': self.config.get('fnorm'),
+			'pcriterion': self.config.get('pcriterion'),
+			'nm_epochs': self.config.get('nm_epochs'),
+			'logfile': logfile,
+		})
+		record.setdefault('metrics', {})
+		record['metrics'].setdefault(mode, []).append(
+			{key: float(value) for key, value in metrics.items()}
+		)
+
+		fd, tmp = tempfile.mkstemp(dir=outdir, suffix='.tmp')
+		with os.fdopen(fd, 'w') as handle:
+			json.dump(record, handle, indent=2)
+		os.replace(tmp, path)

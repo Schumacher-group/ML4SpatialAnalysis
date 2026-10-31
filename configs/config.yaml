@@ -51,6 +51,11 @@ model:
       hidden_dim: 64
       input_dim: ???
       k: 8
+    deepgcn:
+      hidden_dim: 128
+      input_dim: ???
+      num_layers: 3
+      drop_p: 0.3
     attngcn:
       heads: 4
       hidden_dim: 64  # Dimensionality of hidden layer (needs to be specified)

@@ -36,6 +36,12 @@ class SpatialCellToFeatures:
 		#filename = f"{self.config['DATA_PATH']}/RCB_cellcell_processed_new_qcpass7_{self.config['datasplit']}_{self.seed}.pkl"
 
 		split_detail = f"_test{self.config.get('test_ratio', 'na')}" if self.config['datasplit'] == 'split' else ''
+		self.stratify_by_batch = bool(self.config.get('stratify_by_batch', False))
+		self.drop_single_class_batches = bool(self.config.get('drop_single_class_batches', False))
+		if self.stratify_by_batch:
+			split_detail += '_batchstrat'
+		if self.drop_single_class_batches:
+			split_detail += '_purebatchdrop'
 		filename = f"{self.config['DATA_PATH']}/{self.config['cell_filename']}_{self.config['response_filename']}_{self.CACHE_VERSION}_{self.config['datasplit']}{split_detail}_{self.seed}.pkl"
 
 		if os.path.exists(f"{filename}"):		
@@ -75,6 +81,28 @@ class SpatialCellToFeatures:
 			data = pickle.load(f)
 			return data
 
+	def filter_single_class_batches(self, data):
+		"""
+		Drops ROIs from stain batches that contain only one response class.
+		"""
+		stain = np.asarray(data['stain'])
+		labels = np.asarray(data['labels'])
+		keep_batches = [b for b in np.unique(stain)
+						if len(np.unique(labels[stain == b])) > 1]
+		mask = np.isin(stain, keep_batches)
+		dropped = int((~mask).sum())
+		print(f'Dropping {dropped} ROIs from single-class stain batches; '
+			  f'keeping batches {sorted(int(b) for b in keep_batches)}')
+		indices = np.flatnonzero(mask)
+		filtered = {}
+		for key, values in data.items():
+			if values is None or key in ('markers', 'celltypes'):
+				filtered[key] = values
+			else:
+				filtered[key] = [values[i] for i in indices]
+		filtered['labels'] = np.asarray(filtered['labels'])
+		return filtered
+
 	def prepare_data(self, filename):
 		"""
 		Loads raw cell data, preprocesses it, and saves the processed data to a file.
@@ -106,10 +134,13 @@ class SpatialCellToFeatures:
 											filename=datafile)
 		print('Split Expression Data and save to disk')
 		data['labels'] = np.asarray([self.unique_labels[label] for label in data['labels']])
+		if self.drop_single_class_batches:
+			data = self.filter_single_class_batches(data)
 		if self.config['datasplit'] == 'split':
-			data_train, data_test = train_test_split(data, 
-													test_size=self.config['test_ratio'], 
-													random_state=self.seed)
+			data_train, data_test = train_test_split(data,
+													test_size=self.config['test_ratio'],
+													random_state=self.seed,
+													stratify_by_batch=self.stratify_by_batch)
 
 			dataset = {
 						'train': data_train,

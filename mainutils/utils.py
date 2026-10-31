@@ -319,7 +319,7 @@ def coords_to_graph(coords, gmethod='atmostk', mode='connectivity', k=7, radius=
 
 	Args:
 		coords (numpy.ndarray): Array of coordinates representing nodes.
-		mode: ‘connectivity’, ‘distance’
+		mode: 'connectivity', 'distance'
 		gmethod (str, optional): Graph construction method. Defaults to 'atmostk',
 									matching configs/config.yaml.
 		k (int, optional): Number of nearest neighbours. Used by 'knn' and 'atmostk', ignored by
@@ -592,14 +592,65 @@ def patient_level_scores(y, y_pred, y_proba, patients, mode='Test', pcriterion='
 
 
 
-def train_test_split(dataset, test_size=0.2, random_state=None):
+def patient_strata(dataset, stratify_by_batch=False):
 	"""
-	Custom train-test split for a dictionary-like dataset.
+	Per-patient stratification key for splitting.
+
+	Args:
+		dataset (dict): Dataset dict with 'patient', 'labels' and optionally 'stain'.
+		stratify_by_batch (bool): Combine the stain batch into the stratum.
+
+	Returns:
+		(patient_ids, labels, strata): aligned arrays, one entry per unique patient.
+	"""
+	frame = {'patient_id': list(dataset['patient']), 'label': list(dataset['labels'])}
+	has_stain = stratify_by_batch and dataset.get('stain') is not None
+	if has_stain:
+		frame['stain'] = list(dataset['stain'])
+	df = pd.DataFrame(frame)
+
+	grouped = df.groupby('patient_id')
+	patient_ids = np.asarray(list(grouped.groups.keys()))
+	labels = grouped['label'].agg(lambda x: x.iloc[0]).values
+	if not has_stain:
+		return patient_ids, labels, labels
+
+	stains = grouped['stain'].agg(lambda x: Counter(x).most_common(1)[0][0]).values
+	strata = [f'{l}_{s}' for l, s in zip(labels, stains)]
+
+	# sklearn cannot stratify on a class with a single member, and rare
+	# (label, batch) pairs do occur -- batch 3 holds exactly one responder. Merge
+	# each singleton into the largest stratum carrying the same label, so batch
+	# balance is preserved wherever it can be and label balance always is.
+	for _ in range(len(strata)):
+		counts = Counter(strata)
+		singles = [i for i, key in enumerate(strata) if counts[key] < 2]
+		if not singles:
+			break
+		for i in singles:
+			same_label = [key for key, n in counts.items()
+						  if key.startswith(f'{labels[i]}_') and n >= 2]
+			strata[i] = (max(same_label, key=lambda key: counts[key])
+						 if same_label else f'label{labels[i]}')
+		if Counter(strata) == counts:
+			break
+
+	counts = Counter(strata)
+	if any(n < 2 for n in counts.values()):
+		# Nothing left to merge into; label-only stratification is the safe floor.
+		return patient_ids, labels, labels
+	return patient_ids, labels, np.asarray(strata)
+
+
+def train_test_split(dataset, test_size=0.2, random_state=None, stratify_by_batch=False):
+	"""
+	Custom patient-grouped train-test split for a dictionary-like dataset.
 
 	Args:
 		dataset (dict): Dictionary where keys represent different data matrices or labels.
 		test_size (float): Ratio of the dataset to include in the test set.
 		random_state (int or None): Random seed for reproducibility.
+		stratify_by_batch (bool): Stratify on (label, stain batch) instead of label alone.
 
 	Returns:
 		train_set (dict): Dictionary containing train split for each key.
@@ -607,13 +658,10 @@ def train_test_split(dataset, test_size=0.2, random_state=None):
 	"""
 	np.random.seed(random_state)
 
-	nm_samples =  len(dataset['labels'])
 	patient_ids = dataset['patient']
-	df = pd.DataFrame({'patient_id': dataset['patient'], 'label': dataset['labels']})
-
-	unique_patients = df.groupby('patient_id')['label'].agg(lambda x: x.iloc[0])
-	unique_patient_ids = unique_patients.index
-	unique_patient_labels = unique_patients.values
+	unique_patient_ids, unique_patient_labels, strata = patient_strata(
+		dataset, stratify_by_batch=stratify_by_batch
+	)
 
 	# Determine the test size based on the proportion of unique patients
 	test_size = int(test_size * len(unique_patient_ids))
@@ -621,9 +669,9 @@ def train_test_split(dataset, test_size=0.2, random_state=None):
 	from sklearn.model_selection import train_test_split as sk_split
 	# Split the unique patients into training and test sets with stratification
 	train_patient_ids, test_patient_ids = sk_split(
-		unique_patient_ids, 
-		test_size=test_size, 
-		stratify=unique_patient_labels,  # Ensure the split is proportional based on labels
+		unique_patient_ids,
+		test_size=test_size,
+		stratify=strata,
 		random_state=random_state
 		)
 
