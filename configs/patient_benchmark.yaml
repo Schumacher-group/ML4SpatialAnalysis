@@ -1,0 +1,87 @@
+data:
+  cell_table: /n/data1/hms/cellbio/sander/asif/KCLData/data/newdata3/updated_cell_table.csv
+  # Repository copy matches the manuscript cohort (37 responders/26 non-responders).
+  metadata: /home/mok439/workspace/ML4SpatialAnalysis/configs/CleanCohort_Metadata.csv
+  cache_path: /n/data1/hms/cellbio/sander/asif/KCLData/data/newdata3/patient_roi_v5_reported_cohort.pkl
+  # The manuscript cohort did not filter on the later, expression-derived
+  # qc_pass flag; enabling it changes the cohort to 60 patients/392 ROIs.
+  require_qc_pass: false
+  # The legacy loader's effective ROI minimum was 10 cells. This retains the
+  # reported 636 ROIs. In the current cell table, enforcing the manuscript's
+  # stated 1,000-cell cutoff removes 20 ROIs and yields 616, so that threshold
+  # is recorded below as an audit rather than silently changing the cohort.
+  min_cells_per_roi: 10
+  audit_cell_thresholds: [1000]
+  chunk_size: 150000
+  max_cells_per_roi: 512
+  expected_cohort:
+    patients: 63
+    responders: 37
+    non_responders: 26
+    rois: 636
+
+normalization:
+  # Source marker values are already bounded near [0, 1]; no per-ROI log/min-max.
+  transform_name: identity
+  lower_quantile: 0.01
+  upper_quantile: 0.99
+  max_cells_per_patient: 20000
+  clip_value: 5.0
+  include_missing_indicators: false
+  asinh_cofactor: 5.0
+
+graph:
+  # Radius is contact_scale times the ROI's 90th-percentile major cell axis.
+  contact_scale: 1.25
+  max_neighbors: 16
+  num_rbf: 8
+  min_cells_per_type: 8
+
+model:
+  hidden_dim: 64
+  cell_type_dim: 24
+  num_gnn_layers: 2
+  dropout: 0.30
+
+training:
+  device: auto
+  patient_batch_size: 4
+  learning_rate: 0.0003
+  weight_decay: 0.001
+  max_epochs: 120
+  min_epochs: 20
+  patience: 15
+  ranking_loss_weight: 0.10
+
+baseline:
+  c_grid: [0.01, 0.1, 1.0, 10.0]
+  # Shallow, regularized trees are intentional for n=63 patients.
+  random_forest:
+    n_estimators: 500
+    max_depth: [2, 4, null]
+    min_samples_leaf: [2, 4]
+    max_features: [sqrt, 0.5]
+    n_jobs: 8
+  xgboost:
+    n_estimators: [100, 300]
+    max_depth: [1, 2]
+    min_child_weight: [2, 5]
+    learning_rate: [0.03, 0.10]
+    subsample: 0.8
+    colsample_bytree: 0.8
+    reg_alpha: 1.0
+    reg_lambda: 10.0
+    n_jobs: 8
+
+evaluation:
+  seed: 42
+  outer_folds: 5
+  repeats: 1
+  validation_fraction: 0.20
+  feature_modes: [expressions, celltypes, combined]
+  models: [prevalence, summary_logistic, summary_random_forest, summary_xgboost, spatial_logistic, deepsets, gnn, gnn_edge_shuffle]
+  # Edge shuffling is a spatial-specificity control; one combined run is enough.
+  edge_shuffle_modes: [combined]
+
+output:
+  directory: /n/data1/hms/cellbio/sander/asif/ML4SA_Results/patient_benchmark_v4_paper_metadata

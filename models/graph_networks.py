@@ -1,12 +1,14 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv, EdgeConv, SAGEConv, GATConv, DynamicEdgeConv
+from torch_geometric.nn import GCNConv, EdgeConv, SAGEConv, GATConv, DynamicEdgeConv, SSGConv
 
 from torch_geometric.nn import global_mean_pool, global_add_pool, global_max_pool
 from torch_geometric.nn import TopKPooling, SAGPooling, EdgePooling
 from torch_geometric.nn import MLP
 from torch_geometric.nn import GraphNorm, BatchNorm, LayerNorm
+from torch_geometric.utils import softmax as pyg_softmax
+from torch_geometric.nn import GINEConv
 
 class ModelProbs(nn.Module):
 	def __init__(self, model):
@@ -26,6 +28,135 @@ class ModelProbs(nn.Module):
 		"""
 		return torch.sigmoid(self.model(*args, **kwargs))
 
+class GatedAttentionPool(nn.Module):
+	"""
+	Gated-attention readout over cells.
+	"""
+
+	def __init__(self, dim, hidden_dim=None):
+		super().__init__()
+		hidden_dim = hidden_dim or max(1, dim // 2)
+		self.value = nn.Linear(dim, hidden_dim)
+		self.gate = nn.Linear(dim, hidden_dim)
+		self.score = nn.Linear(hidden_dim, 1)
+
+	def forward(self, x, batch):
+		attention = torch.tanh(self.value(x)) * torch.sigmoid(self.gate(x))
+		weights = pyg_softmax(self.score(attention), batch)
+		return global_add_pool(weights * x, batch)
+
+
+class DeepGCN(nn.Module):
+	"""
+	Multi-layer residual GCN with mean, max and gated-attention readout.
+
+	Args:
+		input_dim (int): Node feature dimensionality.
+		hidden_dim (int): Width of every message-passing layer.
+		num_layers (int): Number of GCNConv layers (>=1).
+		drop_p (float): Dropout applied to the pooled graph embedding.
+	"""
+
+	def __init__(self, input_dim, hidden_dim, num_layers=3, drop_p=0.3):
+		super().__init__()
+		self.input_dim = input_dim
+		self.hidden_dim = hidden_dim
+		self.num_layers = int(num_layers)
+		if self.num_layers < 1:
+			raise ValueError(f'num_layers must be >= 1, got {num_layers}')
+
+		self.project = nn.Linear(input_dim, hidden_dim)
+		self.convs = nn.ModuleList(
+			GCNConv(hidden_dim, hidden_dim) for _ in range(self.num_layers)
+		)
+		self.norms = nn.ModuleList(
+			LayerNorm(hidden_dim) for _ in range(self.num_layers)
+		)
+		self.attention_pool = GatedAttentionPool(hidden_dim)
+		self.dropout = nn.Dropout(drop_p)
+		self.clf = nn.Sequential(
+			nn.Linear(3 * hidden_dim, hidden_dim),
+			nn.ReLU(),
+			nn.Dropout(drop_p),
+			nn.Linear(hidden_dim, 1),
+		)
+
+	def hidden_representation(self, x, edge_index, edge_weight, batch):
+		x = self.project(x)
+		for conv, norm in zip(self.convs, self.norms):
+			h = conv(norm(x, batch), edge_index, edge_weight)
+			x = x + F.relu(h)
+
+		pooled = torch.cat(
+			[
+				global_mean_pool(x, batch),
+				global_max_pool(x, batch),
+				self.attention_pool(x, batch),
+			],
+			dim=1,
+		)
+		pooled = self.dropout(pooled)
+		return self.clf(pooled), pooled
+
+	def forward(self, x, edge_index, edge_weight, batch):
+		logits, _ = self.hidden_representation(x, edge_index, edge_weight, batch)
+		return logits
+
+
+class DeepGINE(nn.Module):
+	"""Residual GINE stack that consumes edge features.
+
+	Args:
+		input_dim (int): Node feature dimensionality.
+		hidden_dim (int): Width of every message-passing layer.
+		num_layers (int): Number of GINE blocks.
+		drop_p (float): Dropout on the pooled graph embedding.
+	"""
+
+	def __init__(self, input_dim, hidden_dim, num_layers=3, drop_p=0.3):
+		super().__init__()
+		self.num_layers = int(num_layers)
+		self.project = nn.Linear(input_dim, hidden_dim)
+		self.edge_encoder = nn.Sequential(
+			nn.Linear(1, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, hidden_dim)
+		)
+		self.convs = nn.ModuleList()
+		self.norms = nn.ModuleList()
+		for _ in range(self.num_layers):
+			mlp = nn.Sequential(
+				nn.Linear(hidden_dim, 2 * hidden_dim), nn.ReLU(),
+				nn.Linear(2 * hidden_dim, hidden_dim),
+			)
+			self.convs.append(GINEConv(mlp, edge_dim=hidden_dim, train_eps=True))
+			self.norms.append(LayerNorm(hidden_dim))
+		self.attention_pool = GatedAttentionPool(hidden_dim)
+		self.dropout = nn.Dropout(drop_p)
+		self.clf = nn.Sequential(
+			nn.Linear(3 * hidden_dim, hidden_dim), nn.ReLU(),
+			nn.Dropout(drop_p), nn.Linear(hidden_dim, 1),
+		)
+
+	def hidden_representation(self, x, edge_index, edge_weight, batch):
+		x = self.project(x)
+		if edge_weight is None or edge_weight.numel() == 0:
+			edge_attr = torch.zeros((edge_index.shape[1], x.shape[1]), device=x.device)
+		else:
+			edge_attr = self.edge_encoder(edge_weight.reshape(-1, 1).float())
+		for conv, norm in zip(self.convs, self.norms):
+			h = conv(norm(x, batch), edge_index, edge_attr)
+			x = x + F.relu(h)
+		pooled = torch.cat([
+			global_mean_pool(x, batch),
+			global_max_pool(x, batch),
+			self.attention_pool(x, batch),
+		], dim=1)
+		return self.clf(self.dropout(pooled)), pooled
+
+	def forward(self, x, edge_index, edge_weight, batch):
+		logits, _ = self.hidden_representation(x, edge_index, edge_weight, batch)
+		return logits
+
+
 class GCN(nn.Module):
 	"""
 	Graph Convolutional Network (GCN) model for node classification.
@@ -35,9 +166,9 @@ class GCN(nn.Module):
 		hidden_dim (int): Dimensionality of the hidden layer.
 		nm_class (int): Number of classes for node classification.
 	"""
-	def __init__(self, 
-					input_dim, 
-					hidden_dim, 
+	def __init__(self,
+					input_dim,
+					hidden_dim,
 					drop_p=0.3):
 		super(GCN, self).__init__()
 		self.input_dim = input_dim
@@ -47,23 +178,18 @@ class GCN(nn.Module):
 		self.clf = nn.Sequential(
 						nn.Linear(self.hidden_dim, 1)
 					)
-		self.dropout1 = nn.Dropout(0.5)
-# 		self.dropout2 = nn.Dropout(0.5)
+		self.dropout1 = nn.Dropout(drop_p)
 
 	def hidden_representation(self, x, edge_index, edge_weight, batch):
 		x = self.conv1(x, edge_index, edge_weight)
-		x = self.dropout1(F.relu(self.norm1(x)))
-		
+		x = F.relu(self.norm1(x, batch))
 		x = global_mean_pool(x, batch)
+		x = self.dropout1(x)
 		return self.clf(x), x
 
 	def forward(self, x, edge_index, edge_weight, batch):
-		x = self.conv1(x, edge_index, edge_weight)
-		x = self.dropout1(F.relu(self.norm1(x)))
-		
-		x = global_mean_pool(x, batch)
-		
-		return self.clf(x)
+		logits, _ = self.hidden_representation(x, edge_index, edge_weight, batch)
+		return logits
 
 	def induced_subgraph(self,  x, edge_index, edge_weight, batch):
 		x = self.conv1(x, edge_index, edge_weight)
