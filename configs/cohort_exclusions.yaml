@@ -5,7 +5,8 @@
 #
 # LEAP IDs drop every ROI of that sample; FOVs drop single ROIs.
 leap_ids:
-  # Patient 57. Excluded from the revision cohort used by the spatial analyses.
+  # Patient 57 (also LEAP108, which is not in the dataset): excluded after
+  # pathology review, as not a TNBC case. 16 ROIs across all timepoints.
   - LEAP149
   - LEAP150
 fovs:
