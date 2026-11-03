@@ -1,24 +1,23 @@
 data:
-  cell_table: /n/data1/hms/cellbio/sander/asif/KCLData/data/newdata3/updated_cell_table.csv
-  # Repository copy matches the manuscript cohort (37 responders/26 non-responders).
-  metadata: /home/mok439/workspace/ML4SpatialAnalysis/configs/CleanCohort_Metadata.csv
-  cache_path: /n/data1/hms/cellbio/sander/asif/KCLData/data/newdata3/patient_roi_v5_reported_cohort.pkl
+  cell_table: ./data/updated_cell_table_Ki67.csv
+  # Patient-level metadata is kept local and never tracked in this repository.
+  metadata: ./data/CleanCohort_Metadata.csv
+  cache_path: ./data/patient_roi_v5_corrected_cohort.pkl
   # The manuscript cohort did not filter on the later, expression-derived
   # qc_pass flag; enabling it changes the cohort to 60 patients/392 ROIs.
   require_qc_pass: false
   # The legacy loader's effective ROI minimum was 10 cells. This retains the
-  # reported 636 ROIs. In the current cell table, enforcing the manuscript's
-  # stated 1,000-cell cutoff removes 20 ROIs and yields 616, so that threshold
-  # is recorded below as an audit rather than silently changing the cohort.
+  # corrected cohort of 601 ROIs. The manuscript's stated 1,000-cell cutoff is
+  # recorded below as an audit rather than silently changing the cohort.
   min_cells_per_roi: 10
   audit_cell_thresholds: [1000]
   chunk_size: 150000
   max_cells_per_roi: 512
   expected_cohort:
     patients: 63
-    responders: 37
-    non_responders: 26
-    rois: 636
+    responders: 38
+    non_responders: 25
+    rois: 601
 
 normalization:
   # Source marker values are already bounded near [0, 1]; no per-ROI log/min-max.
@@ -84,4 +83,4 @@ evaluation:
   edge_shuffle_modes: [combined]
 
 output:
-  directory: /n/data1/hms/cellbio/sander/asif/ML4SA_Results/patient_benchmark_v4_paper_metadata
+  directory: ./artifacts/rerun/patient_benchmark
