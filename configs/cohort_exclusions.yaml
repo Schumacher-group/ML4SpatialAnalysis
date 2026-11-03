@@ -10,8 +10,13 @@ leap_ids:
   - LEAP149
   - LEAP150
 fovs:
-  # TODO: the five ROIs identified as duplicate / broken / palette (also excluded
-  # from the revision analyses).
-  # Exact FOV names as they appear in the cell table's `fov` column, e.g. Leap013_3.
-  # scripts/run_rerun_local.sh refuses to run while this list is empty.
-  []
+  # Five ROIs removed from the revision analyses.
+  # Exact names from the cell table's `fov` column; the loaders raise if any is missing.
+  # Duplicates: the same ROIs acquired again in a different IMC run, kept as Leap005_1 and Leap005_2.
+  - Leap005_2_1
+  - Leap005_2_2
+  # Broken ROIs that were retaken at the same location, kept as Leap010_8 and Leap094_10.
+  - Leap010_7
+  - Leap094_7
+  # Not tissue: a palette region.
+  - Leap095_13
