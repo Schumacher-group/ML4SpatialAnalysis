@@ -1,5 +1,6 @@
 import numpy as np
 from .utils import load_cell_data, cellcell_to_features
+import hashlib
 import os
 import pickle
 from mainutils.utils import train_test_split, k_fold_split
@@ -42,13 +43,34 @@ class SpatialCellToFeatures:
 			split_detail += '_batchstrat'
 		if self.drop_single_class_batches:
 			split_detail += '_purebatchdrop'
-		filename = f"{self.config['DATA_PATH']}/{self.config['cell_filename']}_{self.config['response_filename']}_{self.CACHE_VERSION}_{self.config['datasplit']}{split_detail}_{self.seed}.pkl"
+		filename = f"{self.base_cache_path(self.config)[:-4]}_{self.config['datasplit']}{split_detail}_{self.seed}.pkl"
 
 		if os.path.exists(f"{filename}"):		
 			self.data = self.load_split_data(filename)
 		else:
 			self.data = self.prepare_data(filename)
 		
+
+	@staticmethod
+	def cohort_options(config):
+		"""qc_pass switch and cohort exclusions, as read from the dataset config."""
+		from patientgnn.config import load_exclusions
+		leap_ids, fovs = load_exclusions(config)
+		return bool(config.get('require_qc_pass', True)), leap_ids, fovs
+
+	@classmethod
+	def base_cache_path(cls, config):
+		"""Seed-independent cache path. Non-default cohort options get their own
+		suffix so a cache built with other settings is never silently reused."""
+		require_qc, leap_ids, fovs = cls.cohort_options(config)
+		suffix = ''
+		if not require_qc:
+			suffix += '_noqc'
+		if leap_ids or fovs:
+			digest = hashlib.sha1(repr((sorted(leap_ids), sorted(fovs))).encode()).hexdigest()[:8]
+			suffix += f'_excl{digest}'
+		return (f"{config['DATA_PATH']}/{config['cell_filename']}_{config['response_filename']}"
+				f"_{cls.CACHE_VERSION}{suffix}.pkl")
 
 	def load_data(self, filename):
 		"""
@@ -119,14 +141,18 @@ class SpatialCellToFeatures:
 		# New Data
 		#datafile = f"{self.config['DATA_PATH']}/RCB_processed_data_cellcell_new_qcpass7.pkl"
 
-		datafile = f"{self.config['DATA_PATH']}/{self.config['cell_filename']}_{self.config['response_filename']}_{self.CACHE_VERSION}.pkl"
+		datafile = self.base_cache_path(self.config)
 		if os.path.exists(datafile):
 			data = self.load_data(datafile)
 		else:
 			print('Loading Cell Table')
+			require_qc, leap_ids, fovs = self.cohort_options(self.config)
 			cell_table = load_cell_data(self.config['DATA_PATH'],
-											self.config['cell_filename'], 
-											self.config['response_filename']
+											self.config['cell_filename'],
+											self.config['response_filename'],
+											require_qc_pass=require_qc,
+											exclude_leap_ids=leap_ids,
+											exclude_fovs=fovs,
 											)
 
 			print('Preparing Expression Data From Cell Table and saving to disk')

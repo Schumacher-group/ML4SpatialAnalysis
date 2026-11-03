@@ -2,22 +2,32 @@ data:
   cell_table: ./data/updated_cell_table_Ki67.csv
   # Patient-level metadata is kept local and never tracked in this repository.
   metadata: ./data/CleanCohort_Metadata.csv
-  cache_path: ./data/patient_roi_v5_corrected_cohort.pkl
-  # The manuscript cohort did not filter on the later, expression-derived
-  # qc_pass flag; enabling it changes the cohort to 60 patients/392 ROIs.
+  cache_path: ./data/patient_roi_v5_revision62_noqc.pkl
+  # Same exclusions as the ROI-level rerun (62-patient revision cohort).
+  exclusions_file: configs/cohort_exclusions.yaml
+  # No filtering on the old, expression-derived qc_pass flag (rerun decision,
+  # Nov 2026); enabling it changes the cohort to 60 patients/392 ROIs.
   require_qc_pass: false
   # The legacy loader's effective ROI minimum was 10 cells. This retains the
-  # corrected cohort of 601 ROIs. The manuscript's stated 1,000-cell cutoff is
-  # recorded below as an audit rather than silently changing the cohort.
+  # corrected cohort. The manuscript's stated 1,000-cell cutoff was never
+  # applied; it is recorded below as an audit only.
   min_cells_per_roi: 10
+  # Same 26 protein markers as the cell annotation: the QC-failed stains
+  # (CD27, CD38, Tbet, p53, EGFR, VEGF, PD-1, PD-L1, PD-L2) and the technical
+  # channels (DNA1, DNA2, Carboplatin) are left out of the model inputs.
+  markers: [Alpha-SMA, B7-H4, Beta-Catenin, CD107a, CD11b, CD14, CD16, CD163,
+            CD20, CD3, CD31, CD366, CD4, CD44, CD45, CD45RO, CD68, CD8a,
+            Collage-Type_I, E-Cadherin, FOXP3, Granzyme-B, HLA-DR-DQ-DP, Ki-67,
+            Pan-keratin, Vimentin]
   audit_cell_thresholds: [1000]
   chunk_size: 150000
   max_cells_per_roi: 512
+  # Corrected metadata (601 ROIs, 38 R / 25 NR) minus patient 57 and the five
+  # excluded ROIs. The ROI count is recorded in cohort_report.json.
   expected_cohort:
-    patients: 63
-    responders: 38
+    patients: 62
+    responders: 37
     non_responders: 25
-    rois: 601
 
 normalization:
   # Source marker values are already bounded near [0, 1]; no per-ROI log/min-max.
@@ -75,10 +85,11 @@ baseline:
 evaluation:
   seed: 42
   outer_folds: 5
-  repeats: 1
+  # 5 x 5 so that every patient is scored out-of-fold five times.
+  repeats: 5
   validation_fraction: 0.20
   feature_modes: [expressions, celltypes, combined]
-  models: [prevalence, summary_logistic, summary_random_forest, summary_xgboost, spatial_logistic, deepsets, gnn, gnn_edge_shuffle]
+  models: [prevalence, roi_count, stain_batch, summary_logistic, summary_random_forest, summary_xgboost, spatial_logistic, deepsets, gnn, gnn_edge_shuffle]
   # Edge shuffling is a spatial-specificity control; one combined run is enough.
   edge_shuffle_modes: [combined]
 

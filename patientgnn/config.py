@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Mapping, Set, Tuple
 
 
 def load_yaml(path: str) -> Dict[str, Any]:
@@ -44,3 +44,26 @@ def validate_config(config: Dict[str, Any]) -> None:
     for key in ("cell_table", "metadata"):
         if key not in config["data"]:
             raise ValueError(f"Missing data.{key}")
+
+
+def load_exclusions(data_config: Mapping[str, Any]) -> Tuple[Set[str], Set[str]]:
+    """Return (LEAP IDs, FOV names) to drop from the cohort.
+
+    Both pipelines read the same `exclusions_file` (YAML with `leap_ids` and
+    `fovs` lists), so the ROI-level GNN and the patient benchmark cannot drift
+    apart. Inline `exclude_leap_ids` / `exclude_fovs` keys are added on top.
+    LEAP IDs are upper-cased and truncated to 7 characters, as elsewhere.
+    """
+    import yaml
+
+    leap_ids = set(data_config.get("exclude_leap_ids") or [])
+    fovs = set(data_config.get("exclude_fovs") or [])
+    path = data_config.get("exclusions_file")
+    if path:
+        with open(os.path.expanduser(os.path.expandvars(path)), "r", encoding="utf-8") as handle:
+            listed = yaml.safe_load(handle) or {}
+        leap_ids |= set(listed.get("leap_ids") or [])
+        fovs |= set(listed.get("fovs") or [])
+    leap_ids = {str(value).upper()[:7] for value in leap_ids}
+    fovs = {str(value) for value in fovs}
+    return leap_ids, fovs

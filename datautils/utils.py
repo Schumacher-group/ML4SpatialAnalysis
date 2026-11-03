@@ -21,7 +21,8 @@ EXCLUDE_MARKERS = ['CD27', 'CD38', 'Tbet', 'p53', 'EGFR', 'VEGF', 'PD-1', 'PD-L1
 
 MARKERS = list(filter(lambda x: x not in EXCLUDE_MARKERS, ALLMARKERS))
 
-def load_cell_data(datapath, filename_celldata, filename_biosamples):
+def load_cell_data(datapath, filename_celldata, filename_biosamples,
+                   require_qc_pass=True, exclude_leap_ids=(), exclude_fovs=()):
     """
     Loads cell data from CSV files and performs quality control if needed.
 
@@ -38,12 +39,26 @@ def load_cell_data(datapath, filename_celldata, filename_biosamples):
 
     if 'cell_meta_cluster' in cell_table:
         cell_table = cell_table[cell_table['cell_meta_cluster']!='Unassigned']
-    if 'qc_pass' in cell_table:
+    if require_qc_pass and 'qc_pass' in cell_table:
         qc_pass = cell_table['qc_pass'].astype(str).str.strip().str.lower().isin(['true', '1', 'yes', 'y'])
         cell_table = cell_table[qc_pass]
 
     cell_table['LEAP_ID'] = cell_table.fov.str.split('_', n=1).str[0].str.upper()
     cell_table['LEAP_ID'] = cell_table.LEAP_ID.str[:7]  # leap_ID should be Leap123, anything more is stripped
+
+    # Cohort exclusions shared with the patient benchmark (see configs/cohort_exclusions.yaml).
+    exclude_leap_ids = {str(v).upper()[:7] for v in exclude_leap_ids}
+    exclude_fovs = {str(v) for v in exclude_fovs}
+    if exclude_fovs:
+        missing = sorted(exclude_fovs - set(cell_table['fov'].astype(str).unique()))
+        if missing:
+            raise ValueError(f"Excluded FOVs not found in the cell table (check spelling): {missing}")
+    if exclude_leap_ids or exclude_fovs:
+        drop = cell_table['LEAP_ID'].isin(exclude_leap_ids) | cell_table['fov'].astype(str).isin(exclude_fovs)
+        print(f"Excluding {int(drop.sum())} cells in "
+              f"{cell_table.loc[drop, 'fov'].nunique()} ROIs "
+              f"(LEAP IDs {sorted(exclude_leap_ids)}, FOVs {sorted(exclude_fovs)})")
+        cell_table = cell_table[~drop]
 
     cell_table = cell_table.reset_index().merge(biosamples, left_on='LEAP_ID', right_on='LEAP_ID').drop(['LEAP_ID'], axis=1).set_index('index')
 

@@ -18,6 +18,7 @@ from typing import Any, Dict, Iterable, List, Mapping
 
 import numpy as np
 
+from .config import load_exclusions
 from .schema import (
     ALL_MARKERS,
     CACHE_VERSION,
@@ -49,6 +50,11 @@ def _config_fingerprint(data_config: Mapping[str, Any], markers: List[str]) -> s
         "markers": markers,
         "require_qc_pass": bool(data_config.get("require_qc_pass", True)),
     }
+    excluded_leap_ids, excluded_fovs = load_exclusions(data_config)
+    if excluded_leap_ids or excluded_fovs:
+        # Only added when set, so caches built without exclusions keep their fingerprint.
+        payload["excluded_leap_ids"] = sorted(excluded_leap_ids)
+        payload["excluded_fovs"] = sorted(excluded_fovs)
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
@@ -147,6 +153,13 @@ def _build_roi_cache_locked(data_config: Mapping[str, Any], overwrite: bool = Fa
         return cache
 
     metadata = _read_metadata(data_config["metadata"])
+    excluded_leap_ids, excluded_fovs = load_exclusions(data_config)
+    if excluded_leap_ids:
+        dropped = sorted(set(metadata.index) & excluded_leap_ids)
+        metadata = metadata.drop(index=dropped)
+        print(f"excluding pre-treatment samples {dropped} (configured: {sorted(excluded_leap_ids)})",
+              flush=True)
+    seen_excluded_fovs = set()
     header = pd.read_csv(data_config["cell_table"], nrows=0).columns.tolist()
     required = {
         "fov", "cell_meta_cluster", "centroid-0", "centroid-1", *markers,
@@ -176,6 +189,11 @@ def _build_roi_cache_locked(data_config: Mapping[str, Any], overwrite: bool = Fa
 
         leap_id = _normalise_leap_id(chunk["fov"])
         mask &= leap_id.isin(metadata.index)
+        if excluded_fovs:
+            is_excluded_fov = chunk["fov"].astype(str).isin(excluded_fovs)
+            seen_excluded_fovs.update(chunk.loc[is_excluded_fov, "fov"].astype(str).unique())
+            audit["excluded_fov_cells"] += int((mask & is_excluded_fov).sum())
+            mask &= ~is_excluded_fov
         filtered = chunk.loc[mask].copy()
         audit["eligible_cells"] += len(filtered)
         if filtered.empty:
@@ -194,6 +212,10 @@ def _build_roi_cache_locked(data_config: Mapping[str, Any], overwrite: bool = Fa
                 f"retained {audit['eligible_cells']:,}",
                 flush=True,
             )
+
+    missing_fovs = sorted(excluded_fovs - seen_excluded_fovs)
+    if missing_fovs:
+        raise ValueError(f"Excluded FOVs not found in the cell table (check spelling): {missing_fovs}")
 
     min_cells = int(data_config.get("min_cells_per_roi", 50))
     audit_thresholds = sorted(
@@ -260,6 +282,8 @@ def _build_roi_cache_locked(data_config: Mapping[str, Any], overwrite: bool = Fa
             "cell_table": _file_signature(data_config["cell_table"], checksum=False),
             "metadata": _file_signature(data_config["metadata"], checksum=True),
             "require_qc_pass": require_qc,
+            "excluded_leap_ids": sorted(excluded_leap_ids),
+            "excluded_fovs": sorted(excluded_fovs),
             "min_cells_per_roi": min_cells,
             "audit_cell_thresholds": audit_thresholds,
             "markers": markers,
@@ -361,3 +385,39 @@ def group_rois_by_patient(cache: Mapping[str, Any]) -> List[Dict[str, Any]]:
             }
         )
     return patients
+
+
+def drop_single_class_batches(patients: List[Dict[str, Any]]):
+    """Drop ROIs from stain batches in which every patient has the same label.
+
+    Sensitivity analysis for the batch/response confound: in a single-class
+    batch, batch identity alone predicts the label. Patients left with no ROIs
+    are removed. Returns (patients, summary).
+    """
+    batch_labels = defaultdict(set)
+    for patient in patients:
+        for roi in patient["rois"]:
+            batch_labels[roi["stain_batch"]].add(patient["label"])
+    kept_batches = sorted(batch for batch, labels in batch_labels.items() if len(labels) > 1)
+    filtered = []
+    for patient in patients:
+        rois = [roi for roi in patient["rois"] if roi["stain_batch"] in kept_batches]
+        if rois:
+            filtered.append(
+                {
+                    **patient,
+                    "rois": rois,
+                    "stain_batches": sorted({roi["stain_batch"] for roi in rois}),
+                }
+            )
+    summary = {
+        "kept_batches": kept_batches,
+        "dropped_batches": sorted(set(batch_labels) - set(kept_batches)),
+        "patients_before": len(patients),
+        "patients_after": len(filtered),
+        "rois_before": sum(len(patient["rois"]) for patient in patients),
+        "rois_after": sum(len(patient["rois"]) for patient in filtered),
+        "responders_after": sum(patient["label"] == 1 for patient in filtered),
+        "non_responders_after": sum(patient["label"] == 0 for patient in filtered),
+    }
+    return filtered, summary

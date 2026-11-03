@@ -97,6 +97,10 @@ dataset:
   #cell_filename: 'cell_table_contrast_adj/updated_cell_table'  # Filename containing cell table data cell_table_size_normalized_cell_labels
   cell_filename: 'updated_cell_table_Ki67'  # Local cell table; see scripts/run_rerun_local.sh
   response_filename: 'CleanCohort_Metadata'  # Filename containing response labels
+  # Rerun decisions (Nov 2026): no filtering on the old qc_pass flag, and the
+  # same 62-patient revision cohort as the spatial analyses.
+  require_qc_pass: False
+  exclusions_file: 'configs/cohort_exclusions.yaml'
   datasplit: 'split' # Evaluation method ('split' for train/test split, 'kfold' for KFold evaluation)
   test_ratio: 0.3  # Proportion of data used for testing
   folds: 5           # Number of folds for cross-validation

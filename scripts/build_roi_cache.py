@@ -18,9 +18,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', default='configs/config.yaml')
     parser.add_argument('--seeds', type=int, nargs='+', default=[42, 43, 44])
+    parser.add_argument('--print-base-cache', action='store_true',
+                        help='Print the seed-independent cache path for this config and exit')
     args = parser.parse_args()
 
     config = load_config(args.config)
+    if args.print_base_cache:
+        print(SpatialCellToFeatures.base_cache_path(config['dataset']))
+        return
     for seed in args.seeds:
         print(f'=== building cache for seed {seed} ===', flush=True)
         dataset = SpatialCellToFeatures(config['dataset'], random_state=seed)

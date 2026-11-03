@@ -1,0 +1,16 @@
+# Cohort exclusions shared by the ROI-level GNN (configs/config_rerun.yaml) and
+# the patient benchmark (configs/patient_benchmark.yaml), so that the GNN uses
+# the same 62-patient revision cohort as the spatial analyses (cross-PCF,
+# CLAHE evaluation).
+#
+# LEAP IDs drop every ROI of that sample; FOVs drop single ROIs.
+leap_ids:
+  # Patient 57. Excluded from the revision cohort used by the spatial analyses.
+  - LEAP149
+  - LEAP150
+fovs:
+  # TODO: the five ROIs identified as duplicate / broken / palette (also excluded
+  # from the revision analyses).
+  # Exact FOV names as they appear in the cell table's `fov` column, e.g. Leap013_3.
+  # scripts/run_rerun_local.sh refuses to run while this list is empty.
+  []

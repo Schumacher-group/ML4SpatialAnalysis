@@ -267,3 +267,70 @@ def prevalence_baseline(train_patients, test_patients) -> Dict[str, Any]:
             for patient, label, prob in zip(test_patients, y_test, probability)
         ],
     }
+
+
+def _prediction_result(test_patients, y_test, probability) -> Dict[str, Any]:
+    return {
+        "test": patient_metrics(y_test, probability, 0.5),
+        "predictions": [
+            {
+                "patient_id": patient["patient_id"],
+                "label": int(label),
+                "probability": float(prob),
+            }
+            for patient, label, prob in zip(test_patients, y_test, probability)
+        ],
+    }
+
+
+def roi_count_baseline(train_patients, test_patients) -> Dict[str, Any]:
+    """Confound control: predict response from the number of ROIs alone.
+
+    A one-feature logistic regression fitted on the training patients, so the
+    direction of the association is learned without looking at test labels.
+    """
+    from sklearn.linear_model import LogisticRegression
+
+    def counts(patients):
+        return np.log1p([[len(patient["rois"])] for patient in patients])
+
+    y_train = _labels(train_patients)
+    y_test = _labels(test_patients)
+    model = LogisticRegression(class_weight="balanced", max_iter=1000)
+    model.fit(counts(train_patients), y_train)
+    probability = model.predict_proba(counts(test_patients))[:, 1]
+    result = _prediction_result(test_patients, y_test, probability)
+    result["coefficient"] = float(model.coef_[0, 0])
+    return result
+
+
+def stain_batch_baseline(train_patients, test_patients, smoothing: float = 1.0) -> Dict[str, Any]:
+    """Confound control: predict response from stain batch alone.
+
+    Each batch scores the responder fraction among the training patients
+    stained in it, shrunk towards the training prevalence; a patient stained in
+    several batches gets the mean over their batches, and an unseen batch gets
+    the training prevalence. Uses no test labels.
+    """
+    y_train = _labels(train_patients)
+    y_test = _labels(test_patients)
+    prior = float(y_train.mean())
+    responders: Dict[str, float] = {}
+    totals: Dict[str, float] = {}
+    for patient, label in zip(train_patients, y_train):
+        for batch in patient["stain_batches"]:
+            responders[batch] = responders.get(batch, 0.0) + float(label)
+            totals[batch] = totals.get(batch, 0.0) + 1.0
+    rate = {
+        batch: (responders[batch] + smoothing * prior) / (totals[batch] + smoothing)
+        for batch in totals
+    }
+    probability = np.asarray(
+        [
+            np.mean([rate.get(batch, prior) for batch in patient["stain_batches"]])
+            for patient in test_patients
+        ]
+    )
+    result = _prediction_result(test_patients, y_test, probability)
+    result["batch_rates"] = {str(batch): float(value) for batch, value in rate.items()}
+    return result

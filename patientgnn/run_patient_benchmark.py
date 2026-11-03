@@ -18,6 +18,8 @@ from patientgnn.baselines import (
     fit_tabular_baseline,
     patient_feature_matrices,
     prevalence_baseline,
+    roi_count_baseline,
+    stain_batch_baseline,
 )
 from patientgnn.config import load_yaml, validate_config
 from patientgnn.exploration import cohort_report
@@ -27,7 +29,12 @@ from patientgnn.metrics import (
     patient_metrics,
 )
 from patientgnn.normalization import MarkerNormalizer
-from patientgnn.preprocessing import build_roi_cache, group_rois_by_patient, load_roi_cache
+from patientgnn.preprocessing import (
+    build_roi_cache,
+    drop_single_class_batches,
+    group_rois_by_patient,
+    load_roi_cache,
+)
 
 
 def parse_args():
@@ -37,6 +44,15 @@ def parse_args():
     parser.add_argument("--overwrite-cache", action="store_true")
     parser.add_argument("--explore-only", action="store_true")
     parser.add_argument("--no-resume", action="store_true")
+    parser.add_argument(
+        "--drop-single-class-batches",
+        action="store_true",
+        help="Sensitivity analysis: drop ROIs from stain batches containing only one response class",
+    )
+    parser.add_argument(
+        "--output-directory",
+        help="Override output.directory (e.g. for the single-class-batch sensitivity run)",
+    )
     parser.add_argument(
         "--models",
         nargs="+",
@@ -399,7 +415,7 @@ def main():
     validate_config(config)
     seed = int(config["evaluation"].get("seed", 42))
     seed_everything(seed)
-    output_directory = Path(config["output"]["directory"])
+    output_directory = Path(args.output_directory or config["output"]["directory"])
     output_directory.mkdir(parents=True, exist_ok=True)
 
     if args.build_cache or args.overwrite_cache:
@@ -408,7 +424,12 @@ def main():
         cache = load_roi_cache(config["data"]["cache_path"])
     patients = group_rois_by_patient(cache)
     validate_expected_cohort(cache, patients, config["data"].get("expected_cohort"))
-    atomic_json(cohort_report(cache, patients), output_directory / "cohort_report.json")
+    report = cohort_report(cache, patients)
+    if args.drop_single_class_batches or config["evaluation"].get("drop_single_class_batches"):
+        patients, batch_summary = drop_single_class_batches(patients)
+        report["single_class_batch_filter"] = batch_summary
+        print(f"single-class batch filter: {batch_summary}", flush=True)
+    atomic_json(report, output_directory / "cohort_report.json")
     if args.explore_only:
         return
 
@@ -454,18 +475,25 @@ def main():
             flush=True,
         )
 
-        if "prevalence" in configured_models:
-            path = folds_directory / f"prevalence_none_r{repeat}_f{fold}.json"
+        # Label-free and confound baselines: one score per patient, no marker features.
+        for model_name, baseline in (
+            ("prevalence", prevalence_baseline),
+            ("roi_count", roi_count_baseline),
+            ("stain_batch", stain_batch_baseline),
+        ):
+            if model_name not in configured_models:
+                continue
+            path = folds_directory / f"{model_name}_none_r{repeat}_f{fold}.json"
             if not (resume and path.exists()):
-                result = prevalence_baseline(train_patients, test_patients)
-                result.update(model="prevalence", feature_mode="none", repeat=repeat, fold=fold)
+                result = baseline(train_patients, test_patients)
+                result.update(model=model_name, feature_mode="none", repeat=repeat, fold=fold)
                 atomic_json(result, path)
 
         tabular_feature_cache = {}
         for mode in feature_modes:
             normalizer = normalizer_from_config(config, fold_seed).fit(train_patients)
             for model_name in configured_models:
-                if model_name == "prevalence":
+                if model_name in {"prevalence", "roi_count", "stain_batch"}:
                     continue
                 if model_name == "spatial_logistic" and mode == "expressions":
                     continue
