@@ -352,7 +352,8 @@ def _paired_comparisons(grouped, repeats):
             reference = _prediction_map(grouped[reference_key], repeat)
             comparator = _prediction_map(fold_results, repeat)
             common = sorted(set(reference) & set(comparator))
-            if len(common) != len(reference) or len(common) != len(comparator):
+            # Intermediate summaries run after every fold, before later repeats have predictions.
+            if not common or len(common) != len(reference) or len(common) != len(comparator):
                 continue
             y = np.asarray([reference[patient_id][0] for patient_id in common])
             comparator_y = np.asarray([comparator[patient_id][0] for patient_id in common])

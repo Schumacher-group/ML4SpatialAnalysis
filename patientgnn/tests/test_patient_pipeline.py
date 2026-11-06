@@ -135,6 +135,23 @@ class MetricsTest(unittest.TestCase):
         self.assertEqual(result["auc_difference"], 0.0)
         np.testing.assert_allclose(result["ci"], [0.0, 0.0])
 
+    def test_paired_comparisons_skip_repeats_without_predictions(self):
+        # The intermediate summary after the first fold sees repeat 0 only.
+        from patientgnn.run_patient_benchmark import _paired_comparisons
+
+        predictions = [
+            {"patient_id": str(index), "label": label, "probability": probability}
+            for index, (label, probability) in enumerate(
+                zip([0, 0, 0, 1, 1, 1], [0.1, 0.2, 0.3, 0.7, 0.8, 0.9])
+            )
+        ]
+        grouped = {
+            ("gnn", "combined"): [{"repeat": 0, "predictions": predictions}],
+            ("prevalence", "none"): [{"repeat": 0, "predictions": predictions}],
+        }
+        output = _paired_comparisons(grouped, repeats=5)
+        self.assertEqual(len(output["prevalence:none"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
