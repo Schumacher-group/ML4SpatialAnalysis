@@ -152,6 +152,78 @@ class MetricsTest(unittest.TestCase):
         output = _paired_comparisons(grouped, repeats=5)
         self.assertEqual(len(output["prevalence:none"]), 1)
 
+    def test_rank_auc_matches_sklearn_with_ties(self):
+        from sklearn.metrics import roc_auc_score
+
+        from patientgnn.metrics import _rank_auc
+
+        rng = np.random.default_rng(0)
+        labels = rng.integers(0, 2, 40)
+        scores = rng.integers(0, 5, 40).astype(float)  # many ties
+        self.assertAlmostEqual(_rank_auc(labels, scores), roc_auc_score(labels, scores))
+
+    def test_stratified_auc_matches_compare_aggregations_definition(self):
+        from sklearn.metrics import roc_auc_score
+
+        from patientgnn.metrics import roi_count_strata, stratified_auc
+
+        rng = np.random.default_rng(1)
+        counts = rng.integers(2, 30, 60)
+        labels = rng.integers(0, 2, 60)
+        scores = rng.random(60)
+        strata = roi_count_strata(counts)
+        np.testing.assert_array_equal(
+            strata, np.digitize(counts, np.percentile(counts, [33.3, 66.7]))
+        )
+        expected = sum(
+            roc_auc_score(labels[strata == s], scores[strata == s]) * np.sum(strata == s)
+            for s in np.unique(strata)
+        ) / len(labels)
+        self.assertAlmostEqual(stratified_auc(labels, scores, strata), expected)
+
+    def test_stratification_removes_a_pure_count_signal(self):
+        from patientgnn.metrics import stratified_auc
+
+        # Responders have more ROIs, but within each stratum the count is constant,
+        # so a score equal to the count carries no information inside a stratum.
+        counts = np.repeat([5.0, 10.0, 20.0], 10)
+        labels = np.tile([0, 0, 0, 0, 1, 1, 1, 1, 1, 0], 3)
+        labels[20:] = [1, 1, 1, 1, 1, 1, 1, 1, 0, 0]
+        strata = np.repeat([0, 1, 2], 10)
+        self.assertAlmostEqual(stratified_auc(labels, counts, strata), 0.5)
+
+    def test_single_class_stratum_is_skipped(self):
+        from patientgnn.metrics import stratified_auc
+
+        labels = np.asarray([0, 1, 0, 1, 1, 1])
+        scores = np.asarray([0.1, 0.9, 0.2, 0.8, 0.3, 0.4])
+        strata = np.asarray([0, 0, 1, 1, 2, 2])
+        self.assertAlmostEqual(stratified_auc(labels, scores, strata), 1.0)
+
+
+class RoiCountFeatureTest(unittest.TestCase):
+    def test_count_column_is_appended_last(self):
+        from unittest import mock
+
+        from patientgnn import baselines
+
+        patients = [
+            {"label": 0, "rois": [object()] * 3},
+            {"label": 1, "rois": [object()] * 8},
+        ]
+        tissue = np.asarray([[0.5, 0.25], [0.75, 1.0]])
+        with mock.patch.object(baselines, "patient_feature_matrix", return_value=tissue):
+            without, *_ = baselines.patient_feature_matrices(
+                patients, patients, patients, None, "expressions", 0, {}, False, 0
+            )
+            with_count, *_ = baselines.patient_feature_matrices(
+                patients, patients, patients, None, "expressions", 0, {}, False, 0,
+                include_roi_count=True,
+            )
+        np.testing.assert_array_equal(without, tissue)
+        np.testing.assert_allclose(with_count[:, :2], tissue)
+        np.testing.assert_allclose(with_count[:, 2], np.log1p([3, 8]))
+
 
 if __name__ == "__main__":
     unittest.main()

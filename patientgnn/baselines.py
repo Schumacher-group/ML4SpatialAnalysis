@@ -20,6 +20,11 @@ def _labels(patients):
     return np.asarray([patient["label"] for patient in patients], dtype=int)
 
 
+def roi_count_feature(patients) -> np.ndarray:
+    """log(1 + number of ROIs), one row per patient: the ROI-count confound."""
+    return np.log1p([[len(patient["rois"])] for patient in patients]).astype(float)
+
+
 def patient_feature_matrices(
     train_patients: Sequence[Mapping[str, Any]],
     validation_patients: Sequence[Mapping[str, Any]],
@@ -30,7 +35,13 @@ def patient_feature_matrices(
     graph_config: Mapping[str, Any],
     spatial: bool,
     seed: int,
+    include_roi_count: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Patient feature rows per partition.
+
+    With include_roi_count, log(1 + ROI count) is appended as one more column,
+    so that a model can be compared with the count-only baseline on the same folds.
+    """
     kwargs = dict(
         normalizer=normalizer,
         feature_mode=feature_mode,
@@ -42,6 +53,15 @@ def patient_feature_matrices(
     x_train = patient_feature_matrix(train_patients, **kwargs)
     x_validation = patient_feature_matrix(validation_patients, **kwargs)
     x_test = patient_feature_matrix(test_patients, **kwargs)
+    if include_roi_count:
+        x_train, x_validation, x_test = (
+            np.hstack([x, roi_count_feature(patients)])
+            for x, patients in (
+                (x_train, train_patients),
+                (x_validation, validation_patients),
+                (x_test, test_patients),
+            )
+        )
     y_train, y_validation, y_test = map(_labels, (train_patients, validation_patients, test_patients))
     return x_train, x_validation, x_test, y_train, y_validation, y_test
 
@@ -291,14 +311,11 @@ def roi_count_baseline(train_patients, test_patients) -> Dict[str, Any]:
     """
     from sklearn.linear_model import LogisticRegression
 
-    def counts(patients):
-        return np.log1p([[len(patient["rois"])] for patient in patients])
-
     y_train = _labels(train_patients)
     y_test = _labels(test_patients)
     model = LogisticRegression(class_weight="balanced", max_iter=1000)
-    model.fit(counts(train_patients), y_train)
-    probability = model.predict_proba(counts(test_patients))[:, 1]
+    model.fit(roi_count_feature(train_patients), y_train)
+    probability = model.predict_proba(roi_count_feature(test_patients))[:, 1]
     result = _prediction_result(test_patients, y_test, probability)
     result["coefficient"] = float(model.coef_[0, 0])
     return result

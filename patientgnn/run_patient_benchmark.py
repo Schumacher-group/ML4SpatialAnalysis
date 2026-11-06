@@ -26,7 +26,10 @@ from patientgnn.exploration import cohort_report
 from patientgnn.metrics import (
     bootstrap_auc_ci,
     bootstrap_auc_difference_ci,
+    bootstrap_stratified_auc_ci,
     patient_metrics,
+    roi_count_strata,
+    stratified_auc,
 )
 from patientgnn.normalization import MarkerNormalizer
 from patientgnn.preprocessing import (
@@ -264,7 +267,18 @@ def run_neural(
     return result
 
 
-def summarize_results(output_directory: Path, repeats: int):
+def summarize_results(output_directory: Path, repeats: int, roi_counts=None):
+    """Summarise every fold result written so far.
+
+    roi_counts maps patient ID to number of ROIs; when given, each model also
+    gets an AUC stratified by ROI-count tertile of the patients in this run.
+    """
+    strata = None
+    if roi_counts:
+        patient_ids = sorted(roi_counts)
+        strata = dict(
+            zip(patient_ids, roi_count_strata([roi_counts[pid] for pid in patient_ids]))
+        )
     grouped = defaultdict(list)
     for path in sorted((output_directory / "folds").glob("*.json")):
         with open(path, encoding="utf-8") as handle:
@@ -289,6 +303,12 @@ def summarize_results(output_directory: Path, repeats: int):
             metrics["roc_auc_ci"] = bootstrap_auc_ci(
                 y, probability, seed=4049 + repeat, replicates=2000
             )
+            if strata is not None:
+                patient_strata = np.asarray([strata[patient_id] for patient_id in ids])
+                metrics["count_stratified_auc"] = stratified_auc(y, probability, patient_strata)
+                metrics["count_stratified_auc_ci"] = bootstrap_stratified_auc_ci(
+                    y, probability, patient_strata, seed=4049 + repeat, replicates=2000
+                )
             repeat_metrics.append(metrics)
         if not repeat_metrics:
             continue
@@ -314,14 +334,29 @@ def summarize_results(output_directory: Path, repeats: int):
             "fold_auc_std": float(np.std(fold_test_auc, ddof=1)) if len(fold_test_auc) > 1 else 0.0,
             "mean_best_epoch": float(np.mean(best_epochs)) if best_epochs else None,
         }
+        if strata is not None:
+            row["count_stratified_auc_mean"] = float(
+                np.nanmean([item["count_stratified_auc"] for item in repeat_metrics])
+            )
+            row["count_stratified_ci_low"] = float(
+                np.nanmean([item["count_stratified_auc_ci"][0] for item in repeat_metrics])
+            )
+            row["count_stratified_ci_high"] = float(
+                np.nanmean([item["count_stratified_auc_ci"][1] for item in repeat_metrics])
+            )
         rows.append(row)
         detailed[f"{model}:{mode}"] = {"summary": row, "repeats": repeat_metrics}
 
-    paired = _paired_comparisons(grouped, repeats)
     atomic_json(
         {
             "models": detailed,
-            "paired_auc_differences_vs_gnn_combined": paired,
+            "paired_auc_differences_vs_gnn_combined": _paired_comparisons(
+                grouped, repeats, reference_key=("gnn", "combined")
+            ),
+            # Does adding tissue features to the ROI count beat the count alone?
+            "paired_auc_differences_vs_roi_count": _paired_comparisons(
+                grouped, repeats, reference_key=("roi_count", "none")
+            ),
         },
         output_directory / "comparison.json",
     )
@@ -339,8 +374,8 @@ def _prediction_map(fold_results, repeat):
     }
 
 
-def _paired_comparisons(grouped, repeats):
-    reference_key = ("gnn", "combined")
+def _paired_comparisons(grouped, repeats, reference_key=("gnn", "combined")):
+    """Paired bootstrap of reference AUC minus each other model's AUC, per repeat."""
     if reference_key not in grouped:
         return {}
     output = {}
@@ -384,7 +419,8 @@ def _write_comparison_csv(rows, path):
     columns = [
         "model", "feature_mode", "repeat_auc_mean", "repeat_auc_std",
         "oof_auc_ci_low", "oof_auc_ci_high", "fold_auc_mean", "fold_auc_std",
-        "mean_best_epoch",
+        "mean_best_epoch", "count_stratified_auc_mean", "count_stratified_ci_low",
+        "count_stratified_ci_high",
     ]
     with open(path, "w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=columns)
@@ -442,6 +478,18 @@ def main():
     edge_shuffle_modes = set(config["evaluation"].get("edge_shuffle_modes", ["combined"]))
     resume = not args.no_resume
     folds_directory = output_directory / "folds"
+    roi_counts = {patient["patient_id"]: len(patient["rois"]) for patient in patients}
+    # (classifier, spatial contact features, ROI count appended as a feature)
+    tabular_models = {
+        "summary_logistic": ("logistic_regression", False, False),
+        "spatial_logistic": ("logistic_regression", True, False),
+        "summary_random_forest": ("random_forest", False, False),
+        "summary_xgboost": ("xgboost", False, False),
+        "count_summary_logistic": ("logistic_regression", False, True),
+        "count_spatial_logistic": ("logistic_regression", True, True),
+        "count_summary_random_forest": ("random_forest", False, True),
+        "count_summary_xgboost": ("xgboost", False, True),
+    }
 
     for repeat, fold, train_idx, validation_idx, test_idx in _folds(
         patients, config["evaluation"]
@@ -496,7 +544,7 @@ def main():
             for model_name in configured_models:
                 if model_name in {"prevalence", "roi_count", "stain_batch"}:
                     continue
-                if model_name == "spatial_logistic" and mode == "expressions":
+                if model_name in {"spatial_logistic", "count_spatial_logistic"} and mode == "expressions":
                     continue
                 if model_name == "gnn_edge_shuffle" and mode not in edge_shuffle_modes:
                     continue
@@ -505,15 +553,9 @@ def main():
                     print(f"resuming: {path.name}", flush=True)
                     continue
                 print(f"  fitting {model_name}/{mode}", flush=True)
-                tabular_models = {
-                    "summary_logistic": ("logistic_regression", False),
-                    "spatial_logistic": ("logistic_regression", True),
-                    "summary_random_forest": ("random_forest", False),
-                    "summary_xgboost": ("xgboost", False),
-                }
                 if model_name in tabular_models:
-                    classifier_name, spatial = tabular_models[model_name]
-                    feature_key = (mode, spatial)
+                    classifier_name, spatial, with_count = tabular_models[model_name]
+                    feature_key = (mode, spatial, with_count)
                     if feature_key not in tabular_feature_cache:
                         tabular_feature_cache[feature_key] = patient_feature_matrices(
                             train_patients,
@@ -525,6 +567,7 @@ def main():
                             config["graph"],
                             spatial,
                             fold_seed,
+                            include_roi_count=with_count,
                         )
                     result, fitted = fit_tabular_baseline(
                         train_patients,
@@ -562,9 +605,13 @@ def main():
                 result.update(model=model_name, feature_mode=mode, repeat=repeat, fold=fold)
                 atomic_json(result, path)
 
-        summarize_results(output_directory, int(config["evaluation"].get("repeats", 1)))
+        summarize_results(
+            output_directory, int(config["evaluation"].get("repeats", 1)), roi_counts
+        )
 
-    rows = summarize_results(output_directory, int(config["evaluation"].get("repeats", 1)))
+    rows = summarize_results(
+        output_directory, int(config["evaluation"].get("repeats", 1)), roi_counts
+    )
     _write_split_summary(output_directory)
     print(json.dumps(rows, indent=2), flush=True)
 

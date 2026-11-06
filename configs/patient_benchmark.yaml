@@ -89,7 +89,11 @@ evaluation:
   repeats: 5
   validation_fraction: 0.20
   feature_modes: [expressions, celltypes, combined]
-  models: [prevalence, roi_count, stain_batch, summary_logistic, summary_random_forest, summary_xgboost, spatial_logistic, deepsets, gnn, gnn_edge_shuffle]
+  models: [prevalence, roi_count, stain_batch, summary_logistic, summary_random_forest, summary_xgboost, spatial_logistic, deepsets, gnn, gnn_edge_shuffle,
+           count_summary_logistic, count_summary_random_forest, count_summary_xgboost, count_spatial_logistic]
+  # count_* models: the same tissue features plus log(1 + ROI count), compared
+  # with roi_count alone, to ask whether tissue adds anything to the ROI-count
+  # confound. Listed last so that adding them changes nothing for earlier models.
   # Edge shuffling is a spatial-specificity control; one combined run is enough.
   edge_shuffle_modes: [combined]
 
